@@ -52,7 +52,10 @@ STATISTIC(ParallelizableLoopInstructionCounter, "Total number of instructions in
 bool Advisor::runOnModule(Module &M) {
 	DEBUG(dbgs() << "FPGA-Advisor Analysis and Instrumentation Pass starting.\n");
 
+	// do initialization ...
 	mod = &M;
+	CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
+	callGraph = &CG;
 
 	find_recursive_functions(M);
 
@@ -69,8 +72,9 @@ bool Advisor::runOnModule(Module &M) {
 void Advisor::find_recursive_functions(Module &M) {
 	DEBUG(dbgs() << __func__ << "\n");
 	// look at call graph for loops
-	CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
-	DEBUG(CG.print(dbgs()); dbgs() << "\n");
+	//CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
+	//DEBUG(CG.print(dbgs()); dbgs() << "\n");
+	DEBUG(callGraph->print(dbgs()); dbgs() << "\n");
 	//CallGraph &CG = CallGraphAnalysis::run(&M);
 
 	// do a depth first search to find the recursive functions
@@ -82,7 +86,8 @@ void Advisor::find_recursive_functions(Module &M) {
 		if (!F->isDeclaration()) {
 			DEBUG(dbgs() << "Calling does_function_recurse on function: " << F->getName() << "\n");
 			std::vector<Function *> fStack;
-			does_function_recurse(F, CG.getOrInsertFunction(F), fStack); // function will modify recursiveFunctionList directly
+			// function will modify recursiveFunctionList directly
+			does_function_recurse(F, callGraph->getOrInsertFunction(F), fStack); 
 			assert(fStack.empty());
 		} else {
 			errs() << __func__ << " ignored.\n";
@@ -130,7 +135,8 @@ void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vec
 		} else { // print a warning
 			errs() << __func__ << " is being ignored, it is declared outside of this translational unit.\n";
 		}
-		DEBUG(dbgs() << "Returned from call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		DEBUG(dbgs() << "Returned from call to function: " 
+					<< calledGraphNode->getFunction()->getName() << "\n");
 	}
 	// pop off the stack
 	stack.pop_back();
@@ -175,15 +181,118 @@ bool Advisor::has_unsynthesizable_construct(Function *F) {
 	}
 
 	// no external function calls
+	if (has_external_call(F)) {
+		DEBUG(dbgs() << "Function has external function call.\n");
+		return true;
+	}
 
 	// examine memory accesses
 
 	return false;
 }
 
-// Function: has_recursive_call
-// Return: true if function could possibly recurse on itself
+// Function: is_recursive_function
+// Return: true if function is contained in recursiveFunctionList
 // A function recurses if it or any of the functions it calls calls itself
-bool Advisor::has_recursive_call(Function *F) {
-	return false;
+// TODO?? I do not handle function pointers by the way
+bool Advisor::is_recursive_function(Function *F) {
+	return (std::find(recursiveFunctionList.begin(), recursiveFunctionList.end(), F) 
+			!= recursiveFunctionList.end());
 }
+
+// Function: has_recursive_call
+// Return: true if function is recursive or contains a call to a recursive 
+// function on the recursiveFunctionList
+bool Advisor::has_recursive_call(Function *F) {
+	if (is_recursive_function(F)) {
+		return true;
+	}
+
+	bool result = false;
+
+	// look through the CallGraph for this function to see if this function makes calls to 
+	// recursive functions either directly or indirectly
+	if (! F->isDeclaration()) {
+		result = does_function_call_recursive_function(callGraph->getOrInsertFunction(F));
+	} else {
+		//errs() << __func__ << " is being ignored, it is declared outside of this translational unit.\n";
+	}
+
+	return result;
+}
+
+// Function: does_function_call_recursive_function
+// Return: true if function contain a call to a function which is recursive
+// This function should not recurse infinitely since it will stop at a recursive function
+// and therefore not get stuck in a loop in the call graph
+bool Advisor::does_function_call_recursive_function(CallGraphNode *CGN) {
+	if (is_recursive_function(CGN->getFunction())) {
+		return true;
+	}
+
+	bool result = false;
+
+	for (auto it = CGN->begin(), et = CGN->end(); it != et; it++) {
+		CallGraphNode *calledGraphNode = it->second;
+		DEBUG(dbgs() << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		if (! calledGraphNode->getFunction()->isDeclaration()) {
+			result |= does_function_call_recursive_function(calledGraphNode);
+		} else {
+			//errs() << __func__ << " is being ignored, it is declared outside of this translational unit.\n";
+		}
+	}
+	return result;
+}
+
+// Function: has_external_call
+// Return: true if function is or contains a call to an external function
+// external functions are not declared within the current module => library function
+bool Advisor::has_external_call(Function *F) {
+	if (F->isDeclaration()) {
+		return true;
+	}
+
+	bool result = does_function_call_external_function(callGraph->getOrInsertFunction(F));
+
+	return result;
+}
+
+// Function: does_function_call_external_function
+// Return: true if function contain a call to a function which is extenal to the module
+// Always beware of recursive functions when dealing with the call graph
+bool Advisor::does_function_call_external_function(CallGraphNode *CGN) {
+	if (CGN->getFunction()->isDeclaration()) {
+		return true;
+	}
+
+	bool result = false;
+	
+	for (auto it = CGN->begin(), et = CGN->end(); it != et; it++) {
+		CallGraphNode *calledGraphNode = it->second;
+		DEBUG(dbgs() << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		if (std::find(recursiveFunctionList.begin(), recursiveFunctionList.end(), calledGraphNode->getFunction()) 
+			== recursiveFunctionList.end()) {
+			result |= does_function_call_external_function(calledGraphNode);
+		} else {
+			//errs() << __func__ << " is being ignored, it is recursive.\n";
+		}
+	}
+	return result;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

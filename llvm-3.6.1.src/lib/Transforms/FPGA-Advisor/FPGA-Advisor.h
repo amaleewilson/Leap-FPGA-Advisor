@@ -31,7 +31,10 @@ class Advisor : public ModulePass {
 			AU.addRequired<CallGraphWrapperPass>();
 		}
 		Advisor() : ModulePass(ID) {
-			//initializeAdvisorPass(*PassRegistry::getPassRegistry());
+		}
+		bool doInitialization(Module &M) override {
+			// nothing here yet
+			return true;
 		}
 		bool runOnModule(Module &M);
 	
@@ -42,7 +45,11 @@ class Advisor : public ModulePass {
 		void print_recursive_functions();
 		bool run_on_function(Function *F);
 		bool has_unsynthesizable_construct(Function *F);
+		bool is_recursive_function(Function *F);
 		bool has_recursive_call(Function *F);
+		bool does_function_call_recursive_function(CallGraphNode *CGN);
+		bool has_external_call(Function *F);
+		bool does_function_call_external_function(CallGraphNode *CGN);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -50,13 +57,11 @@ class Advisor : public ModulePass {
 		//std::vector<std::pair<Loop *, bool> > loopList;
 		
 		Module *mod;
+		CallGraph *callGraph;
 
 }; // end class Advisor
 
 char Advisor::ID = 0;
-//INITIALIZE_PASS_BEGIN(Advisor, "fpga-advisor", "FPGA-Advisor Analysis and Instrumentation Pass", false, false)
-//INITIALIZE_PASS_DEPENDENCY(CallGraphWrapperPass)
-//INITIALIZE_PASS_END(Advisor, "fpga-advisor", "FPGA-Advisor Analysis and Instrumentation Pass", false, false)
 
 static RegisterPass<Advisor> X("fpga-advisor", "FPGA-Advisor Analysis and Instrumentation Pass", false, false);
 
