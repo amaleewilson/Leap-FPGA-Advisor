@@ -18,13 +18,16 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Analysis/CallGraph.h"
 //#include "llvm/PassManager.h"
+#include "llvm/IR/InstVisitor.h"
 
 #include <vector>
 
 #define DEBUG_TYPE "fpga"
 
-namespace llvm {
-class Advisor : public ModulePass {
+using namespace llvm;
+
+namespace {
+class Advisor : public ModulePass, public InstVisitor<Advisor> {
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -37,6 +40,9 @@ class Advisor : public ModulePass {
 			return true;
 		}
 		bool runOnModule(Module &M);
+		void visitFunction(Function &F);
+		void visitBasicBlock(BasicBlock &BB);
+		void visitInstruction(Instruction &I);
 	
 	private:
 		// functions
@@ -50,6 +56,9 @@ class Advisor : public ModulePass {
 		bool does_function_call_recursive_function(CallGraphNode *CGN);
 		bool has_external_call(Function *F);
 		bool does_function_call_external_function(CallGraphNode *CGN);
+
+		//void visitFunction(Function &F);
+		//void visitBasicBlock(BasicBlock &BB);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;

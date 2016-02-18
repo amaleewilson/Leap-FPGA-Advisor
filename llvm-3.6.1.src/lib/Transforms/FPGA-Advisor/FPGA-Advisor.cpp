@@ -59,6 +59,8 @@ bool Advisor::runOnModule(Module &M) {
 
 	find_recursive_functions(M);
 
+	visit(M); // basic statistics gathering
+
 	// For each function
 	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
 		run_on_function(F);
@@ -66,6 +68,22 @@ bool Advisor::runOnModule(Module &M) {
 
 	return true;
 }
+
+void Advisor::visitFunction(Function &F) {
+	FunctionCounter++;
+}
+
+void Advisor::visitBasicBlock(BasicBlock &BB) {
+	BasicBlockCounter++;
+}
+
+void Advisor::visitInstruction(Instruction &I) {
+	InstructionCounter++;
+}
+
+// visit callsites -- count function calls
+// visit memory related instructions
+
 
 // Function: find_recursive_functions
 // Return: nothing
