@@ -41,48 +41,122 @@ using namespace llvm;
 
 // List of statistics -- not necessarily the statistics listed above, this is
 // at a module level
-STATISTIC(FunctionCounter, "Counts number of functions in module");
-STATISTIC(BasicBlockCounter, "Total number of basic blocks in all functions in module");
-STATISTIC(LoopCounter, "Total number of loops in all functions in module");
-STATISTIC(ParallelizableLoopCounter, "Total number of parallelizable loops in all functions in module");
-STATISTIC(InstructionCounter, "Total number of instructions in all functions in module");
-STATISTIC(LoopInstructionCounter, "Total number of instructions in all loops in all functions in module");
-STATISTIC(ParallelizableLoopInstructionCounter, "Total number of instructions in all parallelizable loops in all functions in module");
+STATISTIC(FunctionCounter, "Number of functions in module");
+STATISTIC(BasicBlockCounter, "Number of basic blocks in all functions in module");
+STATISTIC(LoopCounter, "Number of loops in all functions in module");
+STATISTIC(ParallelizableLoopCounter, "Number of parallelizable loops in all functions in module");
+STATISTIC(InstructionCounter, "Number of instructions in all functions in module");
+STATISTIC(LoopInstructionCounter, "Number of instructions in all loops in all functions in module");
+STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all parallelizable loops in all functions in module");
 
+// Function: runOnModule
+// The function will first find the recursive functions within the module
+// then visit each function, basic block, instruction etc. to gather statistics
+// then for each function perform an analysis using the previously gathered
+// statistics in run_on_function
+// print these statistics
+// finally it will perform instrumentation on the code --> this may be impl.
+// as a separate pass
 bool Advisor::runOnModule(Module &M) {
+
+	//PassManager PM;
+	//PM.add(new LoopInfo());
+	//PM.run(M);
+
 	DEBUG(dbgs() << "FPGA-Advisor Analysis and Instrumentation Pass starting.\n");
 
-	// do initialization ...
 	mod = &M;
-	CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
-	callGraph = &CG;
+
+	// get all the analyses
+	callGraph = &getAnalysis<CallGraphWrapperPass>().getCallGraph();
+
 
 	find_recursive_functions(M);
 
-	visit(M); // basic statistics gathering
+	// basic statistics gathering
+	// also populates the functionMap
+	visit(M);
 
 	// For each function
 	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
 		run_on_function(F);
 	}
 
+	// pre-instrumentation statistics
+	print_statistics();
+
+	// instrumentation stage
+
 	return true;
 }
 
 void Advisor::visitFunction(Function &F) {
+	DEBUG(dbgs() << "visit Function: " << F.getName() << "\n");
 	FunctionCounter++;
+
+	// create and initialize a node for this function
+	FunctionInfo *newFuncInfo = new FunctionInfo();
+	newFuncInfo->function = &F;
+	newFuncInfo->bbList.clear();
+	newFuncInfo->instList.clear();
+	newFuncInfo->loopList.clear();
+	if (! F.isDeclaration()) {
+		// only get the loop info for functions with a body, else will get assertion error
+		newFuncInfo->loopInfo = &getAnalysis<LoopInfo>(F);
+		dbgs() << "PRINTOUT THE LOOPINFO\n";
+		newFuncInfo->loopInfo->print(dbgs());
+		dbgs() << "\n";
+		// find all the loops in this function
+		for (LoopInfo::reverse_iterator li = newFuncInfo->loopInfo->rbegin(), le = newFuncInfo->loopInfo->rend(); li != le; li++) {
+			DEBUG(dbgs() << "Encountered a loop!\n");
+			(*li)->print(dbgs());
+			dbgs() << "\n" << (*li)->isAnnotatedParallel() << "\n";
+			// append to the loopList
+			newFuncInfo->loopList.push_back(*li);
+		}
+	}
+
+	// insert into the map
+	functionMap.insert( {&F, newFuncInfo} );
 }
 
 void Advisor::visitBasicBlock(BasicBlock &BB) {
+	//DEBUG(dbgs() << "visit BasicBlock: " << BB.getName() << "\n");
 	BasicBlockCounter++;
+
+	// make sure function is in functionMap
+	assert(functionMap.find(BB.getParent()) != functionMap.end());
+	FunctionInfo *FI = functionMap.find(BB.getParent())->second;
+	FI->bbList.push_back(&BB);
 }
 
 void Advisor::visitInstruction(Instruction &I) {
+	//DEBUG(dbgs() << "visit Instruction: " << I << "\n");
 	InstructionCounter++;
+
+	// make sure function is in functionMap
+	assert(functionMap.find(I.getParent()->getParent()) != functionMap.end());
+	FunctionInfo *FI = functionMap.find(I.getParent()->getParent())->second;
+	FI->instList.push_back(&I);
+	
+	// eliminate instructions which are not synthesizable
 }
 
 // visit callsites -- count function calls
 // visit memory related instructions
+
+// Function: print_statistics
+// Return: nothing
+void Advisor::print_statistics() {
+	errs() << "Number of Functions : " << functionMap.size() << "\n";
+	// iterate through each function info block
+	for (auto it = functionMap.begin(), et = functionMap.end(); it != et; it++) {
+		errs() << it->first->getName() << ":\n";
+		errs() << "\t" << "Number of BasicBlocks : " << it->second->bbList.size() << "\n";
+		errs() << "\t" << "Number of Instructions : " << it->second->instList.size() << "\n";
+		errs() << "\t" << "Number of Loops : " << it->second->loopList.size() << "\n";
+	}
+}
 
 
 // Function: find_recursive_functions
@@ -172,7 +246,8 @@ void Advisor::print_recursive_functions() {
 }
 
 // Function: run_on_function
-// Return: fals if function cannot be synthesized
+// Return: false if function cannot be synthesized
+// Function looks at the loops within the function
 bool Advisor::run_on_function(Function *F) {
 	DEBUG(dbgs() << "Examine function: " << F->getName() << "\n");
 	// Find constructs that are not supported by HLS
@@ -180,7 +255,6 @@ bool Advisor::run_on_function(Function *F) {
 		DEBUG(dbgs() << "Function contains unsynthesizable constructs, moving on.\n");
 		return false;
 	}
-
 	return true;
 }
 

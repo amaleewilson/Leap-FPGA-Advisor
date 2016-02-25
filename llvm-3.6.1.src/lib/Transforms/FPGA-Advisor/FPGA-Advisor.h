@@ -17,21 +17,36 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Analysis/CallGraph.h"
-//#include "llvm/PassManager.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/PassManager.h"
 #include "llvm/IR/InstVisitor.h"
 
 #include <vector>
+#include <unordered_map>
 
-#define DEBUG_TYPE "fpga"
+#define DEBUG_TYPE "fpga-advisor"
 
 using namespace llvm;
 
 namespace {
+typedef struct {
+	Function *function;
+	LoopInfo *loopInfo;
+	std::vector<BasicBlock *> bbList;
+	std::vector<Instruction *> instList;
+	std::vector<Loop *> loopList;
+	std::vector<LoadInst *> loadList;
+	std::vector<StoreInst *> storeList;
+} FunctionInfo;
+
+
 class Advisor : public ModulePass, public InstVisitor<Advisor> {
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.setPreservesAll();
 			AU.addRequired<CallGraphWrapperPass>();
+			AU.addRequired<LoopInfo>();
 		}
 		Advisor() : ModulePass(ID) {
 		}
@@ -57,6 +72,8 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 		bool has_external_call(Function *F);
 		bool does_function_call_external_function(CallGraphNode *CGN);
 
+		void print_statistics();
+
 		//void visitFunction(Function &F);
 		//void visitBasicBlock(BasicBlock &BB);
 
@@ -64,6 +81,9 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 		std::vector<Function *> functionList;
 		std::vector<Function *> recursiveFunctionList;
 		//std::vector<std::pair<Loop *, bool> > loopList;
+
+		// recursive and external functions are included
+		std::unordered_map<Function *, FunctionInfo *> functionMap;
 		
 		Module *mod;
 		CallGraph *callGraph;
