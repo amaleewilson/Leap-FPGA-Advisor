@@ -1,4 +1,4 @@
-//===- FPGA-Advisor.cpp ----------------------------------- ---------------===//
+//===- FPGA-Advisor.cpp ---------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -37,6 +37,8 @@
 
 #include "FPGA-Advisor.h"
 
+#define DEBUG_TYPE "fpga-advisor"
+
 using namespace llvm;
 
 // List of statistics -- not necessarily the statistics listed above, this is
@@ -48,6 +50,8 @@ STATISTIC(ParallelizableLoopCounter, "Number of parallelizable loops in all func
 STATISTIC(InstructionCounter, "Number of instructions in all functions in module");
 STATISTIC(LoopInstructionCounter, "Number of instructions in all loops in all functions in module");
 STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all parallelizable loops in all functions in module");
+
+std::error_code FEC;
 
 // Function: runOnModule
 // The function will first find the recursive functions within the module
@@ -63,7 +67,11 @@ bool Advisor::runOnModule(Module &M) {
 	//PM.add(new LoopInfo());
 	//PM.run(M);
 
-	DEBUG(dbgs() << "FPGA-Advisor Analysis and Instrumentation Pass starting.\n");
+	raw_fd_ostream OL("fpga-advisor.log", FEC, sys::fs::F_RW);
+	outputLog = &OL;
+	DEBUG(outputLog = &dbgs());
+
+	*outputLog << "FPGA-Advisor Analysis and Instrumentation Pass starting.\n";
 
 	mod = &M;
 
@@ -82,16 +90,22 @@ bool Advisor::runOnModule(Module &M) {
 		run_on_function(F);
 	}
 
+	*outputLog << "On to printing statistics\n";
 	// pre-instrumentation statistics
 	print_statistics();
 
+	*outputLog << "On to instrumentation\n";
 	// instrumentation stage
+	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
+		instrument_function(F);
+		F->print(*outputLog);
+	}
 
 	return true;
 }
 
 void Advisor::visitFunction(Function &F) {
-	DEBUG(dbgs() << "visit Function: " << F.getName() << "\n");
+	*outputLog << "visit Function: " << F.getName() << "\n";
 	FunctionCounter++;
 
 	// create and initialize a node for this function
@@ -100,6 +114,8 @@ void Advisor::visitFunction(Function &F) {
 	newFuncInfo->bbList.clear();
 	newFuncInfo->instList.clear();
 	newFuncInfo->loopList.clear();
+	
+	/* Loop stuff -- ignore for now
 	if (! F.isDeclaration()) {
 		// only get the loop info for functions with a body, else will get assertion error
 		newFuncInfo->loopInfo = &getAnalysis<LoopInfo>(F);
@@ -108,20 +124,21 @@ void Advisor::visitFunction(Function &F) {
 		dbgs() << "\n";
 		// find all the loops in this function
 		for (LoopInfo::reverse_iterator li = newFuncInfo->loopInfo->rbegin(), le = newFuncInfo->loopInfo->rend(); li != le; li++) {
-			DEBUG(dbgs() << "Encountered a loop!\n");
+			*outputLog << "Encountered a loop!\n";
 			(*li)->print(dbgs());
 			dbgs() << "\n" << (*li)->isAnnotatedParallel() << "\n";
 			// append to the loopList
 			newFuncInfo->loopList.push_back(*li);
 		}
 	}
+	*/
 
 	// insert into the map
 	functionMap.insert( {&F, newFuncInfo} );
 }
 
 void Advisor::visitBasicBlock(BasicBlock &BB) {
-	//DEBUG(dbgs() << "visit BasicBlock: " << BB.getName() << "\n");
+	//*outputLog << "visit BasicBlock: " << BB.getName() << "\n";
 	BasicBlockCounter++;
 
 	// make sure function is in functionMap
@@ -131,7 +148,7 @@ void Advisor::visitBasicBlock(BasicBlock &BB) {
 }
 
 void Advisor::visitInstruction(Instruction &I) {
-	//DEBUG(dbgs() << "visit Instruction: " << I << "\n");
+	//*outputLog << "visit Instruction: " << I << "\n";
 	InstructionCounter++;
 
 	// make sure function is in functionMap
@@ -162,7 +179,7 @@ void Advisor::print_statistics() {
 // Function: find_recursive_functions
 // Return: nothing
 void Advisor::find_recursive_functions(Module &M) {
-	DEBUG(dbgs() << __func__ << "\n");
+	*outputLog << __func__ << "\n";
 	// look at call graph for loops
 	//CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
 	//DEBUG(CG.print(dbgs()); dbgs() << "\n");
@@ -176,7 +193,7 @@ void Advisor::find_recursive_functions(Module &M) {
 	// store onto the recursiveFunctionList
 	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
 		if (!F->isDeclaration()) {
-			DEBUG(dbgs() << "Calling does_function_recurse on function: " << F->getName() << "\n");
+			*outputLog << "Calling does_function_recurse on function: " << F->getName() << "\n";
 			std::vector<Function *> fStack;
 			// function will modify recursiveFunctionList directly
 			does_function_recurse(F, callGraph->getOrInsertFunction(F), fStack); 
@@ -192,20 +209,20 @@ void Advisor::find_recursive_functions(Module &M) {
 // Return: nothing
 // Modifies recursiveFunctionList vector
 void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack) {
-	DEBUG(dbgs() << "does_function_recurse: " << CGN->getFunction()->getName() << "\n");
-	DEBUG(dbgs() << "stack size: " << stack.size() << "\n");
+	*outputLog << "does_function_recurse: " << CGN->getFunction()->getName() << "\n";
+	*outputLog << "stack size: " << stack.size() << "\n";
 	// if this function exists within the stack, function recurses and add to list
 	if ((stack.size() > 0) && (std::find(stack.begin(), stack.end(), CGN->getFunction()) != stack.end())) {
-		DEBUG(dbgs() << "Function recurses: " << CGN->getFunction()->getName() << "\n");
+		*outputLog << "Function recurses: " << CGN->getFunction()->getName() << "\n";
 		
 		// delete functions off "stack"
 		//while (stack[stack.size()-1] != CGN->getFunction()) {
 			// pop off stack
 		//	stack.pop_back();
-		//	DEBUG(dbgs() << "stack size: " << stack.size() << "\n");
+		//	*outputLog << "stack size: " << stack.size() << "\n";
 		//}
 		//stack.pop_back();
-		//DEBUG(dbgs() << "stack size: " << stack.size() << "\n");
+		//*outputLog << "stack size: " << stack.size() << "\n";
 		// add to recursiveFunctionList only if this is the function we are checking to be recursive or not
 		// this avoids the situation where a recursive function is added to the list multiple times
 		if (CGN->getFunction() == func) {
@@ -219,7 +236,7 @@ void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vec
 	stack.push_back(CGN->getFunction());
 	for (auto it = CGN->begin(), et = CGN->end(); it != et; it++) {
 		CallGraphNode *calledGraphNode = it->second;
-		DEBUG(dbgs() << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		*outputLog << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n";
 		//stack.push_back(calledGraphNode->getFunction());
 		// ignore this function if its primary definition is outside current module
 		if (! calledGraphNode->getFunction()->isDeclaration()) {
@@ -227,12 +244,12 @@ void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vec
 		} else { // print a warning
 			errs() << __func__ << " is being ignored, it is declared outside of this translational unit.\n";
 		}
-		DEBUG(dbgs() << "Returned from call to function: " 
-					<< calledGraphNode->getFunction()->getName() << "\n");
+		*outputLog << "Returned from call to function: " 
+					<< calledGraphNode->getFunction()->getName() << "\n";
 	}
 	// pop off the stack
 	stack.pop_back();
-	DEBUG(dbgs() << "stack size: " << stack.size() << "\n");
+	*outputLog << "stack size: " << stack.size() << "\n";
 	return;
 }
 
@@ -249,10 +266,10 @@ void Advisor::print_recursive_functions() {
 // Return: false if function cannot be synthesized
 // Function looks at the loops within the function
 bool Advisor::run_on_function(Function *F) {
-	DEBUG(dbgs() << "Examine function: " << F->getName() << "\n");
+	*outputLog << "Examine function: " << F->getName() << "\n";
 	// Find constructs that are not supported by HLS
 	if (has_unsynthesizable_construct(F)) {
-		DEBUG(dbgs() << "Function contains unsynthesizable constructs, moving on.\n");
+		*outputLog << "Function contains unsynthesizable constructs, moving on.\n";
 		return false;
 	}
 	return true;
@@ -268,13 +285,13 @@ bool Advisor::run_on_function(Function *F) {
 bool Advisor::has_unsynthesizable_construct(Function *F) {
 	// no recursion
 	if (has_recursive_call(F)) {
-		DEBUG(dbgs() << "Function has recursive call.\n");
+		*outputLog << "Function has recursive call.\n";
 		return true;
 	}
 
 	// no external function calls
 	if (has_external_call(F)) {
-		DEBUG(dbgs() << "Function has external function call.\n");
+		*outputLog << "Function has external function call.\n";
 		return true;
 	}
 
@@ -326,7 +343,7 @@ bool Advisor::does_function_call_recursive_function(CallGraphNode *CGN) {
 
 	for (auto it = CGN->begin(), et = CGN->end(); it != et; it++) {
 		CallGraphNode *calledGraphNode = it->second;
-		DEBUG(dbgs() << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		*outputLog << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n";
 		if (! calledGraphNode->getFunction()->isDeclaration()) {
 			result |= does_function_call_recursive_function(calledGraphNode);
 		} else {
@@ -361,7 +378,7 @@ bool Advisor::does_function_call_external_function(CallGraphNode *CGN) {
 	
 	for (auto it = CGN->begin(), et = CGN->end(); it != et; it++) {
 		CallGraphNode *calledGraphNode = it->second;
-		DEBUG(dbgs() << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n");
+		*outputLog << "Found a call to function: " << calledGraphNode->getFunction()->getName() << "\n";
 		if (std::find(recursiveFunctionList.begin(), recursiveFunctionList.end(), calledGraphNode->getFunction()) 
 			== recursiveFunctionList.end()) {
 			result |= does_function_call_external_function(calledGraphNode);
@@ -372,7 +389,93 @@ bool Advisor::does_function_call_external_function(CallGraphNode *CGN) {
 	return result;
 }
 
+// Function: instrument_function
+// Instruments each function and the basic blocks contained in the function
+// such that the insrumented IR will print each function execution as well
+// as each basic block that is executed in the function
+// e.g.) Entering Function: func
+void Advisor::instrument_function(Function *F) {
+	// cannot instrument external functions
+	if (F->isDeclaration()) {
+		return;
+	}
 
+	// add printf for basicblocks first that way the function name printf
+	// will be printed before the basicblock due to the way the instructions
+	// are inserted (at first insertion point in basic block)
+	for (auto BB = F->begin(), BE = F->end(); BB != BE; BB++) {
+		instrument_basicblock(BB);
+	}
+
+	*outputLog << "Inserting printf call for function: " << F->getName() << "\n";
+
+	// get the entry basic block
+	BasicBlock *entry = &(F->getEntryBlock());
+
+	// insert call to printf for entry block
+	FunctionType *printf_type = TypeBuilder<int(char *, ...), false>::get(getGlobalContext());
+	Function *printfFunc = cast<Function>(mod->getOrInsertFunction("printf", printf_type,
+						AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	assert(printfFunc);
+	std::vector<Value *> printfArgs;
+
+	IRBuilder<> builder(entry->getFirstInsertionPt());
+	StringRef funcMsgString = StringRef("Entering Function: %s\n");
+	Value *funcMsg = builder.CreateGlobalStringPtr(funcMsgString, "func_msg_string");
+	printfArgs.push_back(funcMsg);
+	
+	Value *funcNameMsg = builder.CreateGlobalStringPtr(F->getName(), "func_name_string");
+	printfArgs.push_back(funcNameMsg);
+
+	//ArrayRef printfArgs(printfArgs);
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+}
+
+// Function: instrument_basicblock
+// Instruments each basicblock to print the name of the basicblock when it is encountered
+// as well as the function to which it belongs:
+// e.g.) BasicBlock: %1 Function: func
+// Whenever a return instruction is encountered, the function should print a message
+// stating that it is returning from function
+// e.g.) Returning from: func
+void Advisor::instrument_basicblock(BasicBlock *BB) {
+	*outputLog << "Inserting printf call for basic block: " << BB->getName() << "\n";
+
+	// insert call to printf at first insertion point
+	FunctionType *printf_type = TypeBuilder<int(char *, ...), false>::get(getGlobalContext());
+	Function *printfFunc = cast<Function>(mod->getOrInsertFunction("printf", printf_type,
+						AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	assert(printfFunc);
+	std::vector<Value *> printfArgs;
+
+	IRBuilder<> builder(BB->getFirstInsertionPt());
+
+	StringRef bbMsgString = StringRef("BasicBlock: %s Function: %s\n");
+	Value *bbMsg = builder.CreateGlobalStringPtr(bbMsgString, "bb_msg_string");
+	Value *bbNameMsg = builder.CreateGlobalStringPtr(BB->getName(), "bb_name_string");
+	Value *funcNameMsg = builder.CreateGlobalStringPtr(BB->getParent()->getName(), "func_name_string");
+
+	printfArgs.push_back(bbMsg);
+	printfArgs.push_back(bbNameMsg);
+	printfArgs.push_back(funcNameMsg);
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	printfArgs.clear();
+
+	// if this basicblock returns from a function, print that message
+	if (isa<ReturnInst>(BB->getTerminator())) {
+		*outputLog << "Inserting printf call for return: ";
+		BB->getTerminator()->print(*outputLog);
+		*outputLog << "\n";
+
+		StringRef retMsgString = StringRef("Return from: %s\n");
+		Value *retMsg = builder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
+
+		printfArgs.push_back(retMsg);
+		printfArgs.push_back(funcNameMsg);
+		builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+		printfArgs.clear();
+	}
+}
 
 
 

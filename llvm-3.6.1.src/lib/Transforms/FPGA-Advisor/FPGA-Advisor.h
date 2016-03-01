@@ -6,6 +6,9 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
+//
+// This file contains the class declarations for all the analysis and Advisor class
+// that are useful for the FPGA-Advisor.
 
 #ifndef LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_H
 #define LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_H
@@ -20,11 +23,13 @@
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/PassManager.h"
 #include "llvm/IR/InstVisitor.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/TypeBuilder.h"
+#include "llvm/Support/FileSystem.h"
 
 #include <vector>
 #include <unordered_map>
-
-#define DEBUG_TYPE "fpga-advisor"
+#include <map>
 
 using namespace llvm;
 
@@ -49,10 +54,7 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 			AU.addRequired<LoopInfo>();
 		}
 		Advisor() : ModulePass(ID) {
-		}
-		bool doInitialization(Module &M) override {
-			// nothing here yet
-			return true;
+			//initializeAdvisorPass(*PassRegistry::getPassRegistry());
 		}
 		bool runOnModule(Module &M);
 		void visitFunction(Function &F);
@@ -71,11 +73,10 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 		bool does_function_call_recursive_function(CallGraphNode *CGN);
 		bool has_external_call(Function *F);
 		bool does_function_call_external_function(CallGraphNode *CGN);
+		void instrument_function(Function *F);
+		void instrument_basicblock(BasicBlock *BB);
 
 		void print_statistics();
-
-		//void visitFunction(Function &F);
-		//void visitBasicBlock(BasicBlock &BB);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -88,12 +89,12 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 		Module *mod;
 		CallGraph *callGraph;
 
+		raw_ostream *outputLog;
+
 }; // end class Advisor
+} // end anonymous namespace
 
 char Advisor::ID = 0;
-
 static RegisterPass<Advisor> X("fpga-advisor", "FPGA-Advisor Analysis and Instrumentation Pass", false, false);
-
-} // end namespace llvm
 
 #endif

@@ -23,15 +23,15 @@
 
 using namespace llvm;
 
-std::error_code EC;
+std::error_code SEC;
 
 bool Scheduler::runOnModule(Module &M) {
 	// output log
-	raw_fd_ostream SL("schedule.log", EC, sys::fs::F_RW);
+	raw_fd_ostream SL("schedule.log", SEC, sys::fs::F_RW);
 	scheduleLog = &SL;
 	*scheduleLog << "Scheduling log:\n";
 
-	raw_fd_ostream OL("output.log", EC, sys::fs::F_RW);
+	raw_fd_ostream OL("output.log", SEC, sys::fs::F_RW);
 	outputLog = &OL;
 	// if debugging flag turned on, debugging output will be displayed,
 	// else it will still be kept in output.log
