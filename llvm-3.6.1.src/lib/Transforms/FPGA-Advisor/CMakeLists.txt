@@ -12,4 +12,5 @@ endif()
 
 add_llvm_loadable_module( LLVMFPGA-Advisor
   FPGA-Advisor.cpp
+  Scheduler.cpp
   )
