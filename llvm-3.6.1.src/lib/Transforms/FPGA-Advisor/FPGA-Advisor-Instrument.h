@@ -1,4 +1,4 @@
-//===- FPGA-Advisor.h - Main FPGA-Advisor pass definition -------*- C++ -*-===//
+//===- FPGA-Advisor-Instrument.h - Main FPGA-Advisor pass definition -------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,10 +8,10 @@
 //===----------------------------------------------------------------------===//
 //
 // This file contains the class declarations for all the analysis and Advisor class
-// that are useful for the FPGA-Advisor.
+// that are useful for the FPGA-Advisor-Instrument.
 
-#ifndef LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_H
-#define LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_H
+#ifndef LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_INSTRUMENT_H
+#define LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_INSTRUMENT_H
 
 #include "llvm/Pass.h"
 #include "llvm/IR/Function.h"
@@ -45,7 +45,7 @@ typedef struct {
 } FunctionInfo;
 
 
-class Advisor : public ModulePass, public InstVisitor<Advisor> {
+class AdvisorInst : public ModulePass, public InstVisitor<AdvisorInst> {
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -53,7 +53,7 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 			AU.addRequired<CallGraphWrapperPass>();
 			AU.addRequired<LoopInfo>();
 		}
-		Advisor() : ModulePass(ID) {
+		AdvisorInst() : ModulePass(ID) {
 			//initializeAdvisorPass(*PassRegistry::getPassRegistry());
 		}
 		bool runOnModule(Module &M);
@@ -91,10 +91,10 @@ class Advisor : public ModulePass, public InstVisitor<Advisor> {
 
 		raw_ostream *outputLog;
 
-}; // end class Advisor
+}; // end class AdvisorInst
 } // end anonymous namespace
 
-char Advisor::ID = 0;
-static RegisterPass<Advisor> X("fpga-advisor", "FPGA-Advisor Analysis and Instrumentation Pass", false, false);
+char AdvisorInst::ID = 0;
+static RegisterPass<AdvisorInst> X("fpga-advisor-instrument", "FPGA-Advisor Analysis and Instrumentation Pass", false, false);
 
 #endif

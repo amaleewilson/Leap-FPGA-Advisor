@@ -1,4 +1,4 @@
-//===- FPGA-Advisor.cpp ---------------------------------------------------===//
+//===- FPGA-Advisor-Instrument.cpp ---------------------------------------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -35,9 +35,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "FPGA-Advisor.h"
+#include "FPGA-Advisor-Instrument.h"
 
-#define DEBUG_TYPE "fpga-advisor"
+#define DEBUG_TYPE "fpga-advisor-instrument"
 
 using namespace llvm;
 
@@ -61,17 +61,17 @@ std::error_code FEC;
 // print these statistics
 // finally it will perform instrumentation on the code --> this may be impl.
 // as a separate pass
-bool Advisor::runOnModule(Module &M) {
+bool AdvisorInst::runOnModule(Module &M) {
 
 	//PassManager PM;
 	//PM.add(new LoopInfo());
 	//PM.run(M);
 
-	raw_fd_ostream OL("fpga-advisor.log", FEC, sys::fs::F_RW);
+	raw_fd_ostream OL("fpga-advisor-instrument.log", FEC, sys::fs::F_RW);
 	outputLog = &OL;
 	DEBUG(outputLog = &dbgs());
 
-	*outputLog << "FPGA-Advisor Analysis and Instrumentation Pass starting.\n";
+	*outputLog << "FPGA-Advisor and Instrumentation Pass Starting.\n";
 
 	mod = &M;
 
@@ -104,7 +104,7 @@ bool Advisor::runOnModule(Module &M) {
 	return true;
 }
 
-void Advisor::visitFunction(Function &F) {
+void AdvisorInst::visitFunction(Function &F) {
 	*outputLog << "visit Function: " << F.getName() << "\n";
 	FunctionCounter++;
 
@@ -137,7 +137,7 @@ void Advisor::visitFunction(Function &F) {
 	functionMap.insert( {&F, newFuncInfo} );
 }
 
-void Advisor::visitBasicBlock(BasicBlock &BB) {
+void AdvisorInst::visitBasicBlock(BasicBlock &BB) {
 	//*outputLog << "visit BasicBlock: " << BB.getName() << "\n";
 	BasicBlockCounter++;
 
@@ -147,7 +147,7 @@ void Advisor::visitBasicBlock(BasicBlock &BB) {
 	FI->bbList.push_back(&BB);
 }
 
-void Advisor::visitInstruction(Instruction &I) {
+void AdvisorInst::visitInstruction(Instruction &I) {
 	//*outputLog << "visit Instruction: " << I << "\n";
 	InstructionCounter++;
 
@@ -164,7 +164,7 @@ void Advisor::visitInstruction(Instruction &I) {
 
 // Function: print_statistics
 // Return: nothing
-void Advisor::print_statistics() {
+void AdvisorInst::print_statistics() {
 	errs() << "Number of Functions : " << functionMap.size() << "\n";
 	// iterate through each function info block
 	for (auto it = functionMap.begin(), et = functionMap.end(); it != et; it++) {
@@ -178,7 +178,7 @@ void Advisor::print_statistics() {
 
 // Function: find_recursive_functions
 // Return: nothing
-void Advisor::find_recursive_functions(Module &M) {
+void AdvisorInst::find_recursive_functions(Module &M) {
 	*outputLog << __func__ << "\n";
 	// look at call graph for loops
 	//CallGraph &CG = getAnalysis<CallGraphWrapperPass>().getCallGraph();
@@ -208,7 +208,7 @@ void Advisor::find_recursive_functions(Module &M) {
 // Function: does_function_recurse
 // Return: nothing
 // Modifies recursiveFunctionList vector
-void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack) {
+void AdvisorInst::does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack) {
 	*outputLog << "does_function_recurse: " << CGN->getFunction()->getName() << "\n";
 	*outputLog << "stack size: " << stack.size() << "\n";
 	// if this function exists within the stack, function recurses and add to list
@@ -254,7 +254,7 @@ void Advisor::does_function_recurse(Function *func, CallGraphNode *CGN, std::vec
 }
 
 
-void Advisor::print_recursive_functions() {
+void AdvisorInst::print_recursive_functions() {
 	dbgs() << "Found recursive functions: \n";
 	for (auto r = recursiveFunctionList.begin(), re = recursiveFunctionList.end(); r != re; r++) {
 		Function *F = *r;
@@ -265,7 +265,7 @@ void Advisor::print_recursive_functions() {
 // Function: run_on_function
 // Return: false if function cannot be synthesized
 // Function looks at the loops within the function
-bool Advisor::run_on_function(Function *F) {
+bool AdvisorInst::run_on_function(Function *F) {
 	*outputLog << "Examine function: " << F->getName() << "\n";
 	// Find constructs that are not supported by HLS
 	if (has_unsynthesizable_construct(F)) {
@@ -282,7 +282,7 @@ bool Advisor::run_on_function(Function *F) {
 // 	- Dynamic memory allocation
 //	- Arbitrary pointer accesses
 // 	- Some tools do not support pthread/openmp but LegUp does (so we will ignore it)
-bool Advisor::has_unsynthesizable_construct(Function *F) {
+bool AdvisorInst::has_unsynthesizable_construct(Function *F) {
 	// no recursion
 	if (has_recursive_call(F)) {
 		*outputLog << "Function has recursive call.\n";
@@ -304,7 +304,7 @@ bool Advisor::has_unsynthesizable_construct(Function *F) {
 // Return: true if function is contained in recursiveFunctionList
 // A function recurses if it or any of the functions it calls calls itself
 // TODO?? I do not handle function pointers by the way
-bool Advisor::is_recursive_function(Function *F) {
+bool AdvisorInst::is_recursive_function(Function *F) {
 	return (std::find(recursiveFunctionList.begin(), recursiveFunctionList.end(), F) 
 			!= recursiveFunctionList.end());
 }
@@ -312,7 +312,7 @@ bool Advisor::is_recursive_function(Function *F) {
 // Function: has_recursive_call
 // Return: true if function is recursive or contains a call to a recursive 
 // function on the recursiveFunctionList
-bool Advisor::has_recursive_call(Function *F) {
+bool AdvisorInst::has_recursive_call(Function *F) {
 	if (is_recursive_function(F)) {
 		return true;
 	}
@@ -334,7 +334,7 @@ bool Advisor::has_recursive_call(Function *F) {
 // Return: true if function contain a call to a function which is recursive
 // This function should not recurse infinitely since it will stop at a recursive function
 // and therefore not get stuck in a loop in the call graph
-bool Advisor::does_function_call_recursive_function(CallGraphNode *CGN) {
+bool AdvisorInst::does_function_call_recursive_function(CallGraphNode *CGN) {
 	if (is_recursive_function(CGN->getFunction())) {
 		return true;
 	}
@@ -356,7 +356,7 @@ bool Advisor::does_function_call_recursive_function(CallGraphNode *CGN) {
 // Function: has_external_call
 // Return: true if function is or contains a call to an external function
 // external functions are not declared within the current module => library function
-bool Advisor::has_external_call(Function *F) {
+bool AdvisorInst::has_external_call(Function *F) {
 	if (F->isDeclaration()) {
 		return true;
 	}
@@ -369,7 +369,7 @@ bool Advisor::has_external_call(Function *F) {
 // Function: does_function_call_external_function
 // Return: true if function contain a call to a function which is extenal to the module
 // Always beware of recursive functions when dealing with the call graph
-bool Advisor::does_function_call_external_function(CallGraphNode *CGN) {
+bool AdvisorInst::does_function_call_external_function(CallGraphNode *CGN) {
 	if (CGN->getFunction()->isDeclaration()) {
 		return true;
 	}
@@ -394,7 +394,7 @@ bool Advisor::does_function_call_external_function(CallGraphNode *CGN) {
 // such that the insrumented IR will print each function execution as well
 // as each basic block that is executed in the function
 // e.g.) Entering Function: func
-void Advisor::instrument_function(Function *F) {
+void AdvisorInst::instrument_function(Function *F) {
 	// cannot instrument external functions
 	if (F->isDeclaration()) {
 		return;
@@ -438,7 +438,7 @@ void Advisor::instrument_function(Function *F) {
 // Whenever a return instruction is encountered, the function should print a message
 // stating that it is returning from function
 // e.g.) Returning from: func
-void Advisor::instrument_basicblock(BasicBlock *BB) {
+void AdvisorInst::instrument_basicblock(BasicBlock *BB) {
 	*outputLog << "Inserting printf call for basic block: " << BB->getName() << "\n";
 
 	// insert call to printf at first insertion point

@@ -1,4 +1,4 @@
-//===- Scheduler.h - Main FPGA-Advisor pass definition -------*- C++ -*-===//
+//===- Scheduler.h - Main Scheduler pass definition -------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This file contains the class declarations for all the analysis and Advisor class
-// that are useful for the FPGA-Advisor.
+// that are useful for the Scheduler.
 
 #ifndef LLVM_LIB_TRANSFORMS_SCHEDULER_H
 #define LLVM_LIB_TRANSFORMS_SCHEDULER_H
@@ -89,12 +89,6 @@ class Scheduler : public ModulePass {
 
 char Scheduler::ID = 0;
 static RegisterPass<Scheduler> X("module-sched", "Performs simple scheduling of instructions for parallelization potential analysis", false, false);
-
-
-//char Scheduler::ID = 0;
-//INITIALIZE_PASS_BEGIN(Scheduler, "module-sched", "FPGA-Advisor Module Scheduler Pass", false, false)
-//INITIALIZE_PASS_DEPENDENCY()
-//INITIALIZE_PASS_END(Scheduler, "module-sched", "FPGA-Advisor Module Scheduler Pass", false, false)
 
 } // end anonymous namespace
 
