@@ -14,4 +14,5 @@ add_llvm_loadable_module( LLVMFPGA-Advisor
   FPGA-Advisor-Instrument.cpp
   FPGA-Advisor-Analysis.cpp
   Scheduler.cpp
+  Instrument.cpp
   )

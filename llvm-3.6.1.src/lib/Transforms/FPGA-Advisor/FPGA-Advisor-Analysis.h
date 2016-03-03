@@ -37,6 +37,11 @@
 using namespace llvm;
 
 namespace {
+typedef struct {
+	LoopInfo *loopInfo;
+	uint64_t maxIter;
+	uint64_t parIter;
+} LoopIterInfo;
 
 class AdvisorAnalysis : public ModulePass {
 	public:
@@ -53,8 +58,11 @@ class AdvisorAnalysis : public ModulePass {
 	private:
 		bool get_program_trace(std::string fileIn);
 		bool check_trace_sanity();
+		BasicBlock *find_basicblock_by_name(std::string funcName, std::string bbName);
 
-		std::list<std::pair<std::string, std::string> > executionTrace;
+		// <functionName, bbName>
+		//std::list<std::pair<std::string, std::string> > executionTrace;
+		std::list<std::pair<Function *, BasicBlock *> > executionTrace;
 
 		Module *mod;
 

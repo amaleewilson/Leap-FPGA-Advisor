@@ -73,8 +73,8 @@ class AdvisorInst : public ModulePass, public InstVisitor<AdvisorInst> {
 		bool does_function_call_recursive_function(CallGraphNode *CGN);
 		bool has_external_call(Function *F);
 		bool does_function_call_external_function(CallGraphNode *CGN);
-		void instrument_function(Function *F);
-		void instrument_basicblock(BasicBlock *BB);
+		//void instrument_function(Function *F);
+		//void instrument_basicblock(BasicBlock *BB);
 
 		void print_statistics();
 

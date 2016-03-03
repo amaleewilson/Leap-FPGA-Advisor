@@ -94,12 +94,14 @@ bool AdvisorInst::runOnModule(Module &M) {
 	// pre-instrumentation statistics
 	print_statistics();
 
+/*
 	*outputLog << "On to instrumentation\n";
 	// instrumentation stage
 	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
 		instrument_function(F);
 		F->print(*outputLog);
 	}
+*/
 
 	return true;
 }
@@ -389,6 +391,7 @@ bool AdvisorInst::does_function_call_external_function(CallGraphNode *CGN) {
 	return result;
 }
 
+/*
 // Function: instrument_function
 // Instruments each function and the basic blocks contained in the function
 // such that the insrumented IR will print each function execution as well
@@ -476,7 +479,7 @@ void AdvisorInst::instrument_basicblock(BasicBlock *BB) {
 		printfArgs.clear();
 	}
 }
-
+*/
 
 
 
