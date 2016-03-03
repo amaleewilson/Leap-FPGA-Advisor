@@ -11,8 +11,7 @@ if(WIN32 OR CYGWIN)
 endif()
 
 add_llvm_loadable_module( LLVMFPGA-Advisor
+  Scheduler.cpp
   FPGA-Advisor-Instrument.cpp
   FPGA-Advisor-Analysis.cpp
-  Scheduler.cpp
-  Instrument.cpp
   )

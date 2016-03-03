@@ -34,67 +34,21 @@
 using namespace llvm;
 
 namespace {
-typedef struct {
-	Function *function;
-	LoopInfo *loopInfo;
-	std::vector<BasicBlock *> bbList;
-	std::vector<Instruction *> instList;
-	std::vector<Loop *> loopList;
-	std::vector<LoadInst *> loadList;
-	std::vector<StoreInst *> storeList;
-} FunctionInfo;
-
-
-class AdvisorInst : public ModulePass, public InstVisitor<AdvisorInst> {
+class AdvisorInstr : public ModulePass {
 	public:
 		static char ID;
-		void getAnalysisUsage(AnalysisUsage &AU) const override {
-			AU.setPreservesAll();
-			AU.addRequired<CallGraphWrapperPass>();
-			AU.addRequired<LoopInfo>();
-		}
-		AdvisorInst() : ModulePass(ID) {
-			//initializeAdvisorPass(*PassRegistry::getPassRegistry());
-		}
+		AdvisorInstr() : ModulePass(ID) {}
 		bool runOnModule(Module &M);
-		void visitFunction(Function &F);
-		void visitBasicBlock(BasicBlock &BB);
-		void visitInstruction(Instruction &I);
-	
 	private:
-		// functions
-		void find_recursive_functions(Module &M);
-		void does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack);
-		void print_recursive_functions();
-		bool run_on_function(Function *F);
-		bool has_unsynthesizable_construct(Function *F);
-		bool is_recursive_function(Function *F);
-		bool has_recursive_call(Function *F);
-		bool does_function_call_recursive_function(CallGraphNode *CGN);
-		bool has_external_call(Function *F);
-		bool does_function_call_external_function(CallGraphNode *CGN);
-		//void instrument_function(Function *F);
-		//void instrument_basicblock(BasicBlock *BB);
-
-		void print_statistics();
-
-		// define some data structures for collecting statistics
-		std::vector<Function *> functionList;
-		std::vector<Function *> recursiveFunctionList;
-		//std::vector<std::pair<Loop *, bool> > loopList;
-
-		// recursive and external functions are included
-		std::unordered_map<Function *, FunctionInfo *> functionMap;
-		
+		void instrument_function(Function *F);
+		void instrument_basicblock(BasicBlock *BB);
 		Module *mod;
-		CallGraph *callGraph;
-
 		raw_ostream *outputLog;
 
-}; // end class AdvisorInst
+}; // end class
 } // end anonymous namespace
 
-char AdvisorInst::ID = 0;
-static RegisterPass<AdvisorInst> X("fpga-advisor-instrument", "FPGA-Advisor Analysis and Instrumentation Pass", false, false);
+char AdvisorInstr::ID = 0;
+static RegisterPass<AdvisorInstr> X("fpga-advisor-instrument", "FPGA-Advisor Instrumentation Pass", false, false);
 
 #endif
