@@ -10,8 +10,18 @@ if(WIN32 OR CYGWIN)
   set(LLVM_LINK_COMPONENTS Core Support)
 endif()
 
+# Boost lib
+set(Boost_ADDITIONAL_VERSIONS "1.39.0" "1.59.0")
+
+find_package( Boost REQUIRED)
+if(Boost_FOUND)
+	include_directories(${Boost_INCLUDE_DIR})
+endif()
+message("boost: ${Boost_INCLUDE_DIRS}")
+
 add_llvm_loadable_module( LLVMFPGA-Advisor
   Scheduler.cpp
   FPGA-Advisor-Instrument.cpp
   FPGA-Advisor-Analysis.cpp
   )
+

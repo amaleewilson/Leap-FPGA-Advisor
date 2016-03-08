@@ -28,6 +28,8 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/CommandLine.h"
 
+#include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/graphviz.hpp>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -60,10 +62,18 @@ typedef struct {
 	int cycEnd;
 } BBSchedElem;
 
-// exeuctionTrace contains the execution traces separated by function
-// the value for each key (function) is a vector, where each vector element
-// represents the basicblock execution of one call to that function
-std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
+// Graph type:
+// STL list container for OutEdge List
+// STL vector container for vertices
+// Use directed edges
+//typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS > digraph;
+typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, BBSchedElem > TraceGraph;
+typedef std::list<TraceGraph> TraceGraphList; 
+typedef std::map<Function *, TraceGraphList> ExecGraph;
+//typedef TraceGraph::iterator TraceGraph_iterator;
+typedef TraceGraphList::iterator TraceGraphList_iterator; 
+typedef ExecGraph::iterator ExecGraph_iterator;
+
 typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
 typedef std::list<std::list<BBSchedElem> > FuncExecTrace;
 typedef std::list<BBSchedElem> Trace;
@@ -123,6 +133,13 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		CallGraph *callGraph;
 
 		raw_ostream *outputLog;
+
+		// exeuctionTrace contains the execution traces separated by function
+		// the value for each key (function) is a vector, where each vector element
+		// represents the basicblock execution of one call to that function
+		std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
+
+		ExecGraph executionGraph;
 
 }; // end class AdvisorAnalysis
 } // end anonymous namespace

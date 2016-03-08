@@ -521,7 +521,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				return false;
 			}
 			
-			FuncExecTrace callList;
+			//==----------------------------------------------------------------==//
 			ExecTrace_iterator fTrace = executionTrace.find(F);
 			if (fTrace == executionTrace.end()) {
 				FuncExecTrace emptyList;
@@ -533,6 +533,19 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				Trace newList;
 				fTrace->second.push_back(newList);
 			}
+			//==----------------------------------------------------------------==//
+			ExecGraph_iterator fGraph = executionGraph.find(F);
+			if (fGraph == executionGraph.end()) {
+				TraceGraphList emptyList;
+				executionGraph.insert(std::make_pair(F, emptyList));
+				TraceGraph newGraph;
+				executionGraph[F].push_back(newGraph);
+			} else {
+				// function exists
+				TraceGraph newGraph;
+				fGraph->second.push_back(newGraph);
+			}
+			//==----------------------------------------------------------------==//
 		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
 			// record this information
 			const char *delimiter = " ";
@@ -573,7 +586,12 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			// mark the end cycles as 'earlier' than start cycles
 			newBB.cycStart = -1;
 			newBB.cycEnd = -2;
+			//==----------------------------------------------------------------==//
 			executionTrace[BB->getParent()].back().push_back(newBB);
+			//==----------------------------------------------------------------==//
+			boost::add_vertex(newBB, executionGraph[BB->getParent()].back());
+			boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
+			//==----------------------------------------------------------------==//
 
 			*outputLog << funcString << "(" << executionTrace[BB->getParent()].size() << ") " << bbString << "\n";
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
@@ -585,7 +603,6 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	}
 	
 	// print some debug output
-
 
 	return true;
 }
@@ -683,7 +700,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	bool scheduled = false;
 	// iterate over all calls
 	for (FuncExecTrace_iterator fIt = executionTrace[F].begin(); fIt != executionTrace[F].end(); fIt++) {
-		scheduled |= find_maximal_configuration_for_call(F, fIt);
+		//scheduled |= find_maximal_configuration_for_call(F, fIt);
 	}
 	return scheduled;
 }
@@ -693,6 +710,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 // This function will find the maximum needed tiling for a given function
 // for one call/run of the function
 // The parallelization factor will be stored in metadata for each basicblock
+/*
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, FuncExecTrace_iterator trace) {
 
 		BasicBlock *entryBB = &(F->getEntryBlock());
@@ -723,12 +741,13 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, FuncExecT
 			//=-----------------------------------------------------------------=//
 			
 			// each function can only have one entry point, can it be part of a loop? I should think not..
-			if (currBB )
+			if (currBB ) {
+			}
 
 		}
 
 		return true;
 }
-
+*/
 
 

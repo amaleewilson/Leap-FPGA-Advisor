@@ -514,6 +514,8 @@ endif()
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
 include_directories( ${LLVM_INCLUDE_DIR} ${LLVM_MAIN_INCLUDE_DIR})
+include_directories( "/usr/intel/pkgs/boost/1.59.0/include")
+set(LLVM_REQUIRES_RTTI 1)
 
 # when crosscompiling import the executable targets from a file
 if(CMAKE_CROSSCOMPILING)
