@@ -45,6 +45,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "FPGA-Advisor-Analysis.h"
+#include <algorithm>
 #include <fstream>
 #include <regex>
 
@@ -75,7 +76,9 @@ STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all p
 // Function: runOnModule
 // This is the main analysis pass
 bool AdvisorAnalysis::runOnModule(Module &M) {
-	// initialization
+	//=------------------------------------------------------=//
+	// [1] Initialization
+	//=------------------------------------------------------=//
 	raw_fd_ostream OL("fpga-advisor-analysis.log", AEC, sys::fs::F_RW);
 	outputLog = &OL;
 	DEBUG(outputLog = &dbgs());
@@ -84,38 +87,19 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 
 	mod = &M;
 
-	// static analyses
+	//=------------------------------------------------------=//
+	// [2] Static analyses and setup
+	//=------------------------------------------------------=//
 	callGraph = &getAnalysis<CallGraphWrapperPass>().getCallGraph();
-
-
 	find_recursive_functions(M);
 
 	// basic statistics gathering
 	// also populates the functionMap
 	visit(M);
-
-	// For each function
-	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
-		run_on_function(F);
-	}
-
-	*outputLog << "On to printing statistics\n";
-	// pre-instrumentation statistics
-	print_statistics();
-
-/*
-	*outputLog << "On to instrumentation\n";
-	// instrumentation stage
-	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
-		instrument_function(F);
-		F->print(*outputLog);
-	}
-*/
-
-
-
-
-	// read the trace from file into memory
+	
+	//=------------------------------------------------------=//
+	// [3] Read trace from file into memory
+	//=------------------------------------------------------=//
 	if (! get_program_trace(TraceFileName)) {
 		errs() << "Could not find trace file: " << TraceFileName << "!\n";
 		return false;
@@ -128,19 +112,19 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	//	return false;
 	//}
 
-	// now that we have the trace imported into memory, let's mark
-	// each loop with a max iteration count
-	// This is the algorithm:
-	// 	For each loop:
-	//		iterate through the trace
-	//			if (currBB = loop.Header)
-	//				maxIt++
-	//			else if (currBB ! belongs in loop)
-	//				loop.maxIt = MAX(loop.maxIt, maxIt)
-	//				maxIt = 0
-	//			else // currBB belongs in loop
-	//				// do nothing
+	//=------------------------------------------------------=//
+	// [4] Analysis after dynamic feedback for each function
+	//=------------------------------------------------------=//
+	for (auto F = M.begin(), FE = M.end(); F != FE; F++) {
+		run_on_function(F);
+	}
 
+	//=------------------------------------------------------=//
+	// [5] Printout statistics
+	//=------------------------------------------------------=//
+	*outputLog << "Print static information\n";
+	// pre-instrumentation statistics => work with uninstrumented code
+	print_statistics();
 
 	return true;
 }
@@ -157,23 +141,30 @@ void AdvisorAnalysis::visitFunction(Function &F) {
 	newFuncInfo->instList.clear();
 	newFuncInfo->loopList.clear();
 	
-	/* Loop stuff -- ignore for now
 	if (! F.isDeclaration()) {
 		// only get the loop info for functions with a body, else will get assertion error
 		newFuncInfo->loopInfo = &getAnalysis<LoopInfo>(F);
-		dbgs() << "PRINTOUT THE LOOPINFO\n";
-		newFuncInfo->loopInfo->print(dbgs());
-		dbgs() << "\n";
+		*outputLog << "PRINTOUT THE LOOPINFO\n";
+		newFuncInfo->loopInfo->print(*outputLog);
+		*outputLog << "\n";
 		// find all the loops in this function
 		for (LoopInfo::reverse_iterator li = newFuncInfo->loopInfo->rbegin(), le = newFuncInfo->loopInfo->rend(); li != le; li++) {
 			*outputLog << "Encountered a loop!\n";
-			(*li)->print(dbgs());
-			dbgs() << "\n" << (*li)->isAnnotatedParallel() << "\n";
+			(*li)->print(*outputLog);
+			*outputLog << "\n" << (*li)->isAnnotatedParallel() << "\n";
 			// append to the loopList
-			newFuncInfo->loopList.push_back(*li);
+			//newFuncInfo->loopList.push_back(*li);
+			LoopIterInfo newLoop;
+			//newLoop.loopInfo = *li;
+			// how many subloops are contained within the loop
+			*outputLog << "This natural loop contains " << (*li)->getSubLoops().size() << " subloops\n";
+			newLoop.subloops = (*li)->getSubLoopsVector();
+			*outputLog << "Copied subloops " << newLoop.subloops.size() << "\n";
+			newLoop.maxIter = 0;
+			newLoop.parIter = 0;
+			newFuncInfo->loopList.push_back(newLoop);
 		}
 	}
-	*/
 
 	// insert into the map
 	functionMap.insert( {&F, newFuncInfo} );
@@ -314,6 +305,56 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 		*outputLog << "Function contains unsynthesizable constructs, moving on.\n";
 		return false;
 	}
+	// now that we have the trace imported into memory, let's mark
+	// each loop with a max iteration count
+	// This is the algorithm:
+	// 	For each loop:
+	//		iterate through the trace
+	//			if (currBB = loop.Header)
+	//				maxIt++
+	//			else if (currBB ! belongs in loop)
+	//				loop.maxIt = MAX(loop.maxIt, maxIt)
+	//				maxIt = 0
+	//			else // currBB belongs in loop
+	//				// do nothing
+
+	// for each loop
+	/*
+	assert(functionMap.find(F) != functionMap.end());
+	FunctionInfo *fInfo = (functionMap.find(F))->second;
+	for (auto loopIt = fInfo->loopList.begin(); loopIt != fInfo->loopList.end(); loopIt++) {
+		// iterate through the trace
+		LoopIterInfo loopIterInfo = *loopIt;
+		Loop *loop = loopIterInfo.loopInfo;
+		BasicBlock *header = loop->getHeader();
+
+		*outputLog << "Annotating loop: " << header->getName() << "\n";
+		uint64_t maxIterations = 0;
+		for (std::list<BasicBlock *>::iterator traceBB = executionTrace.begin(); traceBB != executionTrace.end(); traceBB++) {
+			BasicBlock *currBB = *traceBB;
+			if ((currBB)->getParent() != header->getParent()) {
+				continue;
+			}
+			if (currBB == header) {
+				maxIterations++;
+			} else if (!loop->contains(currBB)) {
+				loopIterInfo.maxIter = std::max(maxIterations, loopIterInfo.maxIter);
+				maxIterations = 0;
+			} else {
+				// block belongs in loop
+			}
+		}
+		*outputLog << "Max iteration is: " << loopIterInfo.maxIter << "\n";
+	}
+	*/
+
+	// for each execution of the function found in the trace
+	// we want to find the optimal tiling for the basicblocks
+	// the starting point of the algorithm is the MOST parallel
+	// configuration, which can be found by scheduling independent
+	// sic blocks in the earliest cycle that it is allowed to be executed
+	find_maximal_configuration_for_all_calls(F);
+
 	return true;
 }
 
@@ -446,13 +487,52 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	}
 	
 	std::string line;
+
+	// unique ID for each basic block executed
+	int ID = 0;
+
 	while (std::getline(fin, line)) {
 		// There are 3 types of messages:
 		//	1. Enter Function: <func name>
 		//	2. Basic Block: <basic block name> Function: <func name>
 		//	3. Return from: <func name>
 		if (std::regex_match(line, std::regex("(Entering Function: )(.*)"))) {
-			// nothing to do really...
+			// enter function into execution trace, if not already present
+			const char *delimiter = " ";
+			
+			// make a non-const copy of line
+			std::vector<char> lineCopy(line.begin(), line.end());
+			lineCopy.push_back(0);
+
+			//=----------------------------=//
+			char *pch = std::strtok(&lineCopy[0], delimiter);
+			// Entering
+			pch = strtok(NULL, delimiter);
+			// Function:
+			pch = strtok(NULL, delimiter);
+			// funcName
+			std::string funcString(pch);
+			//=----------------------------=//
+
+			Function *F = find_function_by_name(funcString);
+			if (!F) {
+				// could not find the function by name
+				errs() << "Could not find the function from trace in program!\n";
+				return false;
+			}
+			
+			FuncExecTrace callList;
+			ExecTrace_iterator fTrace = executionTrace.find(F);
+			if (fTrace == executionTrace.end()) {
+				FuncExecTrace emptyList;
+				executionTrace.insert(std::make_pair(F, emptyList));
+				Trace newList;
+				executionTrace[F].push_back(newList);
+			} else {
+				// function exists
+				Trace newList;
+				fTrace->second.push_back(newList);
+			}
 		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
 			// record this information
 			const char *delimiter = " ";
@@ -485,9 +565,17 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			}
 			// TODO We can do sanity checks here to make sure the path taken by the
 			// trace is valid
-			executionTrace.push_back(std::make_pair(BB->getParent(), BB));
+			//executionTrace.push_back(BB);
+			BBSchedElem newBB;
+			newBB.basicblock = BB;
+			newBB.ID = ID++;
+			// mark the start and end cycles of unscheduled basic blocks as -ve
+			// mark the end cycles as 'earlier' than start cycles
+			newBB.cycStart = -1;
+			newBB.cycEnd = -2;
+			executionTrace[BB->getParent()].back().push_back(newBB);
 
-			*outputLog << "Function-BasicBlock pair: (" << funcString << ")(" << bbString << ")\n";
+			*outputLog << funcString << "(" << executionTrace[BB->getParent()].size() << ") " << bbString << "\n";
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			// nothing to do really...
 		} else {
@@ -495,6 +583,10 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			return false;
 		}
 	}
+	
+	// print some debug output
+
+
 	return true;
 }
 
@@ -555,8 +647,6 @@ bool AdvisorAnalysis::trace_cfg(BasicBlock *startBB) {
 // Return: Pointer to the basic block belonging to function and basic block, NULL if
 // not found
 BasicBlock *AdvisorAnalysis::find_basicblock_by_name(std::string funcName, std::string bbName) {
-	// iterate through the functions and basicblocks to find the corresponding basic block
-	BasicBlock *retBB = NULL;
 	for (auto F = mod->begin(), FE = mod->end(); F != FE; F++) {
 		if (strcmp(funcName.c_str(), F->getName().str().c_str()) != 0) {
 			continue;
@@ -567,17 +657,78 @@ BasicBlock *AdvisorAnalysis::find_basicblock_by_name(std::string funcName, std::
 			}
 		}
 	}
-	return retBB;
+	return NULL;
 }
 
+// Function: find_function_by_name
+// Return: Pointer to the function belonging to function, NULL if not found
+Function *AdvisorAnalysis::find_function_by_name(std::string funcName) {
+	for (auto F = mod->begin(), FE = mod->end(); F != FE; F++) {
+		if (strcmp(funcName.c_str(), F->getName().str().c_str()) != 0) {
+			continue;
+		}
+		return F;
+	}
+	return NULL;
+}
 
+// Function: find_maximal_configuration_for_all_calls
+// Return: true if successful, else false
+// This function will find the maximum needed tiling for a given function
+// across all individual calls within the trace
+// Does not look across function boundaries
+// The parallelization factor will be stored in metadata for each basicblock
+bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
+	assert(executionTrace.find(F) != executionTrace.end());
+	bool scheduled = false;
+	// iterate over all calls
+	for (FuncExecTrace_iterator fIt = executionTrace[F].begin(); fIt != executionTrace[F].end(); fIt++) {
+		scheduled |= find_maximal_configuration_for_call(F, fIt);
+	}
+	return scheduled;
+}
 
+// Function: find_maximal_configuration_for_call
+// Return: true if successful, else false
+// This function will find the maximum needed tiling for a given function
+// for one call/run of the function
+// The parallelization factor will be stored in metadata for each basicblock
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, FuncExecTrace_iterator trace) {
 
+		BasicBlock *entryBB = &(F->getEntryBlock());
+		// build some data structure for anti-chain
 
+		// for each separate call, iterate across the trace for that call instance
+		for (Trace_iterator bbIt = trace->begin(); bbIt != trace->end(); trace++) {
+			BasicBlock *currBB = bbIt->basicblock;
+			// the scheduling of basicblocks will occur through the marking of
+			// basic block scheduling elements with start and end cycles corresponding
+			// to when the basic block can start executing.
+			// TODO FIXME: For now, let's just assume each basic block takes 1 cycle
 
+			//=-----------------------------------------------------------------=//
+			// How to schedule the basic blocks:
+			// 1) Basic blocks whose only dependencies are outside of the function
+			//		can all be scheduled right away
+			// 2) Basic blocks whose preceding basic block schedule elements in
+			//		the function call trace has been scheduled
+			// 3) Basic blocks whose dependent basic blocks have all been scheduled
+			//=-----------------------------------------------------------------=//
+			
+			//=-----------------------------------------------------------------=//
+			// When is a basic block ready to be scheduled:
+			// The trace should start at the entry block, the first entry block
+			// should be ready to be scheduled.
+			// Blocks whose parent has been scheduled are ready to be scheduled
+			//=-----------------------------------------------------------------=//
+			
+			// each function can only have one entry point, can it be part of a loop? I should think not..
+			if (currBB )
 
+		}
 
-
+		return true;
+}
 
 
 

@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file contains the class declarations for all the analysis and Advisor class
+// This file contains the class declarations for all the analysis
 // that are useful for the FPGA-Advisor-Analysis.
 
 #ifndef LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_ANALYSIS_H
@@ -38,7 +38,7 @@ using namespace llvm;
 
 namespace {
 typedef struct {
-	LoopInfo *loopInfo;
+	std::vector<Loop*> subloops;
 	uint64_t maxIter;
 	uint64_t parIter;
 } LoopIterInfo;
@@ -48,10 +48,28 @@ typedef struct {
 	LoopInfo *loopInfo;
 	std::vector<BasicBlock *> bbList;
 	std::vector<Instruction *> instList;
-	std::vector<Loop *> loopList;
+	std::vector<LoopIterInfo> loopList;
 	std::vector<LoadInst *> loadList;
 	std::vector<StoreInst *> storeList;
 } FunctionInfo;
+
+typedef struct {
+	BasicBlock *basicblock;
+	uint64_t ID;
+	int cycStart;
+	int cycEnd;
+} BBSchedElem;
+
+// exeuctionTrace contains the execution traces separated by function
+// the value for each key (function) is a vector, where each vector element
+// represents the basicblock execution of one call to that function
+std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
+typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
+typedef std::list<std::list<BBSchedElem> > FuncExecTrace;
+typedef std::list<BBSchedElem> Trace;
+typedef ExecTrace::iterator ExecTrace_iterator;
+typedef FuncExecTrace::iterator FuncExecTrace_iterator;
+typedef Trace::iterator Trace_iterator;
 
 class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 	public:
@@ -87,6 +105,11 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool get_program_trace(std::string fileIn);
 		bool check_trace_sanity();
 		BasicBlock *find_basicblock_by_name(std::string funcName, std::string bbName);
+		Function *find_function_by_name(std::string funcName);
+
+		// functions that do analysis on trace
+		bool find_maximal_configuration_for_all_calls(Function *F);
+		bool find_maximal_configuration_for_call(Function *F, FuncExecTrace_iterator trace);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -96,10 +119,6 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		// recursive and external functions are included
 		std::unordered_map<Function *, FunctionInfo *> functionMap;
 	
-		// <functionName, bbName>
-		//std::list<std::pair<std::string, std::string> > executionTrace;
-		std::list<std::pair<Function *, BasicBlock *> > executionTrace;
-
 		Module *mod;
 		CallGraph *callGraph;
 
