@@ -67,19 +67,31 @@ typedef struct {
 // STL vector container for vertices
 // Use directed edges
 //typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS > digraph;
+// trace graph property
+//typedef boost::property<boost::vertex_index_t, BBSchedElem> VertexProperty;
+//typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, VertexProperty > TraceGraph;
 typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, BBSchedElem > TraceGraph;
 typedef std::list<TraceGraph> TraceGraphList; 
 typedef std::map<Function *, TraceGraphList> ExecGraph;
-//typedef TraceGraph::iterator TraceGraph_iterator;
+
+// iterators
+typedef TraceGraph::vertex_iterator TraceGraph_iterator;
 typedef TraceGraphList::iterator TraceGraphList_iterator; 
 typedef ExecGraph::iterator ExecGraph_iterator;
 
-typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
-typedef std::list<std::list<BBSchedElem> > FuncExecTrace;
-typedef std::list<BBSchedElem> Trace;
-typedef ExecTrace::iterator ExecTrace_iterator;
-typedef FuncExecTrace::iterator FuncExecTrace_iterator;
-typedef Trace::iterator Trace_iterator;
+// vertex descriptor
+typedef TraceGraph::vertex_descriptor TraceGraph_descriptor;
+
+// edge iterators
+typedef TraceGraph::out_edge_iterator TraceGraph_out_edge_iterator;
+typedef TraceGraph::edge_iterator TraceGraph_edge_iterator;
+
+//typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
+//typedef std::list<std::list<BBSchedElem> > FuncExecTrace;
+//typedef std::list<BBSchedElem> Trace;
+//typedef ExecTrace::iterator ExecTrace_iterator;
+//typedef FuncExecTrace::iterator FuncExecTrace_iterator;
+//typedef Trace::iterator Trace_iterator;
 
 class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 	public:
@@ -119,7 +131,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 
 		// functions that do analysis on trace
 		bool find_maximal_configuration_for_all_calls(Function *F);
-		bool find_maximal_configuration_for_call(Function *F, FuncExecTrace_iterator trace);
+		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it);
+		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -137,7 +150,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		// exeuctionTrace contains the execution traces separated by function
 		// the value for each key (function) is a vector, where each vector element
 		// represents the basicblock execution of one call to that function
-		std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
+		//std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
 
 		ExecGraph executionGraph;
 

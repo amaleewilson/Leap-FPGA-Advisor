@@ -52,18 +52,24 @@
 #define DEBUG_TYPE "fpga-advisor-analysis"
 
 using namespace llvm;
-
 using std::ifstream;
 
 std::error_code AEC;
+
+//===----------------------------------------------------------------------===//
+// Advisor Analysis Pass options
+//===----------------------------------------------------------------------===//
 
 static cl::opt<std::string> TraceFileName("trace-file", cl::desc("Name of the trace file"), 
 		cl::Hidden, cl::init("trace.log"));
 static cl::opt<bool> IgnoreSanity("ignore-sanity", cl::desc("Enable to ignore trace sanity check"),
 		cl::Hidden, cl::init(false));
 
-// List of statistics -- not necessarily the statistics listed above, this is
-// at a module level
+//===----------------------------------------------------------------------===//
+// List of statistics -- not necessarily the statistics listed above,
+// this is at a module level
+//===----------------------------------------------------------------------===//
+
 STATISTIC(FunctionCounter, "Number of functions in module");
 STATISTIC(BasicBlockCounter, "Number of basic blocks in all functions in module");
 STATISTIC(LoopCounter, "Number of loops in all functions in module");
@@ -72,6 +78,17 @@ STATISTIC(InstructionCounter, "Number of instructions in all functions in module
 STATISTIC(LoopInstructionCounter, "Number of instructions in all loops in all functions in module");
 STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all parallelizable loops in all functions in module");
 
+//===----------------------------------------------------------------------===//
+// Helper functions
+//===----------------------------------------------------------------------===//
+//template <typename T> void output_dot_graph(std::ostream stream, T const &g) {
+//	boost::write_graphviz(stream, g);
+//}
+
+
+//===----------------------------------------------------------------------===//
+// AdvisorAnalysis Class functions
+//===----------------------------------------------------------------------===//
 
 // Function: runOnModule
 // This is the main analysis pass
@@ -477,7 +494,7 @@ bool AdvisorAnalysis::does_function_call_external_function(CallGraphNode *CGN) {
 // Reads input trace file, parses and stores trace into executionTrace map
 bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	// clear the hash
-	executionTrace.clear();
+	//executionTrace.clear();
 
 	// read file
 	ifstream fin;
@@ -490,6 +507,8 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 	// unique ID for each basic block executed
 	int ID = 0;
+
+	TraceGraph::vertex_descriptor prevVertex = NULL;
 
 	while (std::getline(fin, line)) {
 		// There are 3 types of messages:
@@ -522,17 +541,17 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			}
 			
 			//==----------------------------------------------------------------==//
-			ExecTrace_iterator fTrace = executionTrace.find(F);
-			if (fTrace == executionTrace.end()) {
-				FuncExecTrace emptyList;
-				executionTrace.insert(std::make_pair(F, emptyList));
-				Trace newList;
-				executionTrace[F].push_back(newList);
-			} else {
-				// function exists
-				Trace newList;
-				fTrace->second.push_back(newList);
-			}
+			//ExecTrace_iterator fTrace = executionTrace.find(F);
+			//if (fTrace == executionTrace.end()) {
+			//	FuncExecTrace emptyList;
+			//	executionTrace.insert(std::make_pair(F, emptyList));
+			//	Trace newList;
+			//	executionTrace[F].push_back(newList);
+			//} else {
+			//	// function exists
+			//	Trace newList;
+			//	fTrace->second.push_back(newList);
+			//}
 			//==----------------------------------------------------------------==//
 			ExecGraph_iterator fGraph = executionGraph.find(F);
 			if (fGraph == executionGraph.end()) {
@@ -579,21 +598,33 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			// TODO We can do sanity checks here to make sure the path taken by the
 			// trace is valid
 			//executionTrace.push_back(BB);
-			BBSchedElem newBB;
-			newBB.basicblock = BB;
-			newBB.ID = ID++;
+			//==----------------------------------------------------------------==//
+			//BBSchedElem newBB;
+			//newBB.basicblock = BB;
+			//newBB.ID = ID;
 			// mark the start and end cycles of unscheduled basic blocks as -ve
 			// mark the end cycles as 'earlier' than start cycles
-			newBB.cycStart = -1;
-			newBB.cycEnd = -2;
+			//newBB.cycStart = -1;
+			//newBB.cycEnd = -2;
+			//executionTrace[BB->getParent()].back().push_back(newBB);
+			//*outputLog << funcString << "(" << executionTrace[BB->getParent()].size() << ") " << bbString << "\n";
 			//==----------------------------------------------------------------==//
-			executionTrace[BB->getParent()].back().push_back(newBB);
-			//==----------------------------------------------------------------==//
-			boost::add_vertex(newBB, executionGraph[BB->getParent()].back());
-			boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
+			TraceGraph::vertex_descriptor currVertex = boost::add_vertex(executionGraph[BB->getParent()].back());
+			TraceGraph &currGraph = executionGraph[BB->getParent()].back();
+			currGraph[currVertex].basicblock = BB;
+			currGraph[currVertex].ID = ID;
+			currGraph[currVertex].cycStart = -1;
+			currGraph[currVertex].cycEnd = -1;
+			if (prevVertex != NULL) {
+				// A -> B means that A depends on the completion of B
+				boost::add_edge(currVertex, prevVertex, executionGraph[BB->getParent()].back());
+			}
+			prevVertex = currVertex;
+			//boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
 			//==----------------------------------------------------------------==//
 
-			*outputLog << funcString << "(" << executionTrace[BB->getParent()].size() << ") " << bbString << "\n";
+			// increment the node ID
+			ID++;
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			// nothing to do really...
 		} else {
@@ -696,11 +727,13 @@ Function *AdvisorAnalysis::find_function_by_name(std::string funcName) {
 // Does not look across function boundaries
 // The parallelization factor will be stored in metadata for each basicblock
 bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
-	assert(executionTrace.find(F) != executionTrace.end());
+	//assert(executionTrace.find(F) != executionTrace.end());
+	assert(executionGraph.find(F) != executionGraph.end());
 	bool scheduled = false;
 	// iterate over all calls
-	for (FuncExecTrace_iterator fIt = executionTrace[F].begin(); fIt != executionTrace[F].end(); fIt++) {
-		//scheduled |= find_maximal_configuration_for_call(F, fIt);
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
+			fIt != executionGraph[F].end(); fIt++) {
+		scheduled |= find_maximal_configuration_for_call(F, fIt);
 	}
 	return scheduled;
 }
@@ -710,12 +743,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 // This function will find the maximum needed tiling for a given function
 // for one call/run of the function
 // The parallelization factor will be stored in metadata for each basicblock
-/*
-bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, FuncExecTrace_iterator trace) {
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it) {
 
 		BasicBlock *entryBB = &(F->getEntryBlock());
 		// build some data structure for anti-chain
 
+		/*
 		// for each separate call, iterate across the trace for that call instance
 		for (Trace_iterator bbIt = trace->begin(); bbIt != trace->end(); trace++) {
 			BasicBlock *currBB = bbIt->basicblock;
@@ -745,9 +778,67 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, FuncExecT
 			}
 
 		}
+		*/
+
+		// Algorithm description:
+		// 	for each node N in the graph G
+		// 		for each parent node P of N
+		//			recursively: if N does not depend on P:
+		//				P->N->children, P->parent->N
+		
+		std::pair<TraceGraph_iterator, TraceGraph_iterator> p;
+		TraceGraph graph = *graph_it;
+		// print out what the schedule graph looks like before
+		boost::write_graphviz(std::cerr, graph);
+		p = vertices(graph);
+		bool changed = true;
+		while (changed) {
+			changed = false;
+			for (TraceGraph_iterator gIt = p.first; gIt != p.second; gIt++) {
+				TraceGraph_descriptor self = *gIt;
+				*outputLog << "Vertex " << self << ": " << graph[self].basicblock->getName() << "\n";
+				// get all the out edges
+				/*
+				std::pair<TraceGraph_out_edge_iterator, TraceGraph_out_edge_iterator> out_edges = boost::out_edges(self, graph);
+				*outputLog << "Out edge: " << *out_edges.first << " " << *out_edges.second << "\n";
+				*/
+				// A -> B means A is dependent on B
+				TraceGraph_out_edge_iterator oi, oe;
+				for (boost::tie(oi, oe) = boost::out_edges(self, graph); oi != oe; oi++) {
+					TraceGraph_descriptor parent = boost::target(*oi, graph);
+					*outputLog << "Out edge of " << self << " points to " << parent << "\n";
+						if (basicblock_is_dependent(graph[self].basicblock, graph[parent].basicblock, graph)) {
+							continue;
+						}
+						// inherit the parents of the parent
+						changed = true;
+				}
+			}
+		}
 
 		return true;
 }
-*/
+
+
+// Function: basicblock_is_dependent
+// Return: true if child is dependent on parent and must execute after parent
+bool AdvisorAnalysis::basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph) {
+	return true;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
