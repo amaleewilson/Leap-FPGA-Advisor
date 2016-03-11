@@ -54,7 +54,13 @@
 using namespace llvm;
 using std::ifstream;
 
+//===----------------------------------------------------------------------===//
+// Some globals ... is that bad? :/
+//===----------------------------------------------------------------------===//
+
 std::error_code AEC;
+MemoryDependenceAnalysis *MDA;
+DominatorTree *DT;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -72,11 +78,11 @@ static cl::opt<bool> IgnoreSanity("ignore-sanity", cl::desc("Enable to ignore tr
 
 STATISTIC(FunctionCounter, "Number of functions in module");
 STATISTIC(BasicBlockCounter, "Number of basic blocks in all functions in module");
-STATISTIC(LoopCounter, "Number of loops in all functions in module");
-STATISTIC(ParallelizableLoopCounter, "Number of parallelizable loops in all functions in module");
 STATISTIC(InstructionCounter, "Number of instructions in all functions in module");
-STATISTIC(LoopInstructionCounter, "Number of instructions in all loops in all functions in module");
-STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all parallelizable loops in all functions in module");
+//STATISTIC(LoopCounter, "Number of loops in all functions in module");
+//STATISTIC(ParallelizableLoopCounter, "Number of parallelizable loops in all functions in module");
+//STATISTIC(LoopInstructionCounter, "Number of instructions in all loops in all functions in module");
+//STATISTIC(ParallelizableLoopInstructionCounter, "Number of instructions in all parallelizable loops in all functions in module");
 
 //===----------------------------------------------------------------------===//
 // Helper functions
@@ -508,7 +514,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	// unique ID for each basic block executed
 	int ID = 0;
 
-	TraceGraph::vertex_descriptor prevVertex = NULL;
+	TraceGraph::vertex_descriptor prevVertex = 0;
 
 	while (std::getline(fin, line)) {
 		// There are 3 types of messages:
@@ -615,9 +621,9 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].ID = ID;
 			currGraph[currVertex].cycStart = -1;
 			currGraph[currVertex].cycEnd = -1;
-			if (prevVertex != NULL) {
+			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
-				boost::add_edge(currVertex, prevVertex, executionGraph[BB->getParent()].back());
+				boost::add_edge(currVertex, prevVertex, currGraph);
 			}
 			prevVertex = currVertex;
 			//boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
@@ -785,6 +791,14 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		// 		for each parent node P of N
 		//			recursively: if N does not depend on P:
 		//				P->N->children, P->parent->N
+
+		// get the memory dependence analysis for function
+		MDA = &getAnalysis<MemoryDependenceAnalysis>(*F);
+		assert(MDA);
+		
+		// get the dominator tree for function
+		DT = &getAnalysis<DominatorTreeWrapperPass>(*F).getDomTree();
+		assert(DT);
 		
 		std::pair<TraceGraph_iterator, TraceGraph_iterator> p;
 		TraceGraph graph = *graph_it;
@@ -797,40 +811,228 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 			for (TraceGraph_iterator gIt = p.first; gIt != p.second; gIt++) {
 				TraceGraph_descriptor self = *gIt;
 				*outputLog << "Vertex " << self << ": " << graph[self].basicblock->getName() << "\n";
-				// get all the out edges
-				/*
-				std::pair<TraceGraph_out_edge_iterator, TraceGraph_out_edge_iterator> out_edges = boost::out_edges(self, graph);
-				*outputLog << "Out edge: " << *out_edges.first << " " << *out_edges.second << "\n";
-				*/
+
 				// A -> B means A is dependent on B
+				// get all the out edges
 				TraceGraph_out_edge_iterator oi, oe;
 				for (boost::tie(oi, oe) = boost::out_edges(self, graph); oi != oe; oi++) {
 					TraceGraph_descriptor parent = boost::target(*oi, graph);
 					*outputLog << "Out edge of " << self << " points to " << parent << "\n";
-						if (basicblock_is_dependent(graph[self].basicblock, graph[parent].basicblock, graph)) {
-							continue;
-						}
-						// inherit the parents of the parent
-						changed = true;
+					if (basicblock_is_dependent(graph[self].basicblock, graph[parent].basicblock, graph)) {
+						continue;
+					} else {
+						*outputLog << "No data dependencies between basicblocks " << self << "\n";
+					}
+
+					if (basicblock_control_flow_dependent(graph[self].basicblock, graph[parent].basicblock, graph)) {
+						//continue;
+					}
+
+					*outputLog << "No control flow dependencies between basicblocks " << self << "\n";
+
+
+
+					// inherit the parents of the parent
+					// add edge from self to parents of parent
+					TraceGraph_out_edge_iterator pi, pe;
+					for (boost::tie(pi, pe) = boost::out_edges(parent, graph); pi != pe; pi++) {
+						TraceGraph_descriptor grandparent = boost::target(*pi, graph);
+						boost::add_edge(self, grandparent, graph);
+					}
+					
+					// remove edge from self to parent
+					boost::remove_edge(self, parent, graph);
+
+					//changed = true; // FIXME FIXME FIXME only executing 1 cycle of this now
 				}
 			}
+			// print out what the schedule graph looks like after each transformation
+			boost::write_graphviz(std::cerr, graph);
 		}
+
+		// print out what the schedule graph looks like after
+		boost::write_graphviz(std::cerr, graph);
 
 		return true;
 }
 
-
 // Function: basicblock_is_dependent
 // Return: true if child is dependent on parent and must execute after parent
 bool AdvisorAnalysis::basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph) {
-	return true;
+	// use dependence analysis to determine if basic block is dependent on another
+	// we care about true dependencies and control flow dependencies only
+	// true dependencies include any of these situations:
+	// 	- if any instruction in the child block depends on an output produced from the
+	//	parent block
+	//	- how do we account for loop dependencies??
+	// compare each instruction in the child to the parent
+	bool dependent = false;
+	for (auto cI = child->begin(); cI != child->end(); cI++) {
+		for (auto pI = parent->begin(); pI != parent->end(); pI++) {
+			dependent |= instruction_is_dependent(cI, pI);
+		}
+	}
+
+	return dependent;
 }
 
 
+// Function: instruction_is_dependent
+// Return: true if instruction inst1 is dependent on inst2 and must be executed after inst2
+bool AdvisorAnalysis::instruction_is_dependent(Instruction *inst1, Instruction *inst2) {
+	bool dependent = false;
+	// handle different instruction types differently
+	// namely, for stores and loads we need to consider memory dependence analysis stufffff
+	// flow dependence exists at two levels:
+	//	1) inst1 directly consumes the output of inst2
+	//		E.g.
+	//			a = x + y
+	//			b = load(a)
+	//	Memory data dependence analysis:
+	//	2) inst2 modifies memory which inst1 requires
+	//		E.g.
+	//			store(addr1, x)
+	//			a = load(addr1)
+	//	3) inst2 modifies a memory location which inst1 also modifies!?!?
+	//		E.g.
+	//			store(addr1, x)
+	//			...
+	//			store(addr2, y)
+	//		Although, you could argue we would just get rid of the first store in this case
+	//	4) inst1 modifies memory which inst2 first reads
+	//		E.g.
+	//			a = load(addr1)
+	//			...
+	//			store(addr1, x)
+	// 1)
+	if (true_dependence_exists(inst1, inst2)) {
+		return true;
+	}
 
+	// only look at memory instructions
+	// but don't care if both are loads
+	if (inst1->mayReadOrWriteMemory() && inst2->mayReadOrWriteMemory()
+		&& !(inst1->mayReadFromMemory() && inst2->mayReadFromMemory())) {
+		*outputLog << "Looking at memory instructions: ";
+		inst1->print(*outputLog);
+		*outputLog << " & ";
+		inst2->print(*outputLog);
+		*outputLog << "\n";
+		MemDepResult MDR = MDA->getDependency(inst1);
+		if (Instruction *srcInst = MDR.getInst()) {
+			if (srcInst == inst2) {
+				*outputLog << "There is a memory dependence: ";
+				inst1->print(*outputLog);
+				*outputLog << " is dependent on ";
+				srcInst->print(*outputLog);
+				*outputLog << "\n";
+				dependent |= true;
+			} else {
+				// inst1 is not dependent on inst2
+			}
+		} else {
+			// Other:
+			// Could be non-local to basic block => it is
+			// Could be non-local to function
+			// Could just be unknown
+			if (MDR.isNonLocal()) {
+				// this is what we expect...
+				*outputLog << "Non-local dependency\n";
+				/*
+				MemDepResult nonLocalMDR = MDA->getDependency(inst1).getNonLocal();
+				*outputLog << "---" << nonLocalMDR.isNonLocal() <<  " " << MDR.isNonLocal() << "\n";
+				if (Instruction *srcInst = nonLocalMDR.getInst()) {
+					*outputLog << "Source of dependency: ";
+					srcInst->print(*outputLog);
+					*outputLog << "\n";
+					if (srcInst == inst2) {
+						*outputLog << "There is a memory dependence: ";
+						inst1->print(*outputLog);
+						*outputLog << " is dependent on ";
+						srcInst->print(*outputLog);
+						*outputLog << "\n";
+						dependent |= true;
+					}
+				}*/
 
+				SmallVector<NonLocalDepResult, 0> queryResult;
+				MDA->getNonLocalPointerDependency(inst1, queryResult);
+				// scan the query results to see if inst2 is in this set
+				//*outputLog << "query result size " << queryResult.size() < "\n";
+				for (SmallVectorImpl<NonLocalDepResult>::const_iterator qi = queryResult.begin(); qi != queryResult.end(); qi++) {
+					// which basic block is this dependency originating from
+					NonLocalDepResult NLDR = *qi;
+					const MemDepResult nonLocalMDR = NLDR.getResult();
 
+					*outputLog << "entry ";
+					if (Instruction *srcInst = nonLocalMDR.getInst()) {
+						srcInst->print(*outputLog);
+						if (srcInst == inst2) {
+							dependent |= true;
+						}
+					}
+					*outputLog << "\n";
+				}
+			} else if (MDR.isNonFuncLocal()) {
+				*outputLog << "Non-func-local dependency\n";
+				// nothing.. this is fine
+				// this is beyond our scope
+			} else {
+				*outputLog << "UNKNOWN\n";
+				// unknown, so we will mark as dependent
+				dependent |= true;
+			}
+		}
+	}
 
+	return dependent;
+}
+
+// Function: true_dependence_exists
+// Returns: true if there is a flow dependence flowing from inst2 to inst1
+// i.e. inst1 must execute after inst2
+bool AdvisorAnalysis::true_dependence_exists(Instruction *inst1, Instruction *inst2) {
+	// look at each operand of inst1
+	User *user = dyn_cast<User>(inst1);
+	assert(user);
+
+	Value *val2 = dyn_cast<Value>(inst2);
+	for (auto op = user->op_begin(); op != user->op_end(); op++) {
+		Value *val1 = op->get();
+		if (val1 == val2) {
+			*outputLog << "True dependency exists: ";
+			inst1->print(*outputLog);
+			*outputLog << ", ";
+			inst2->print(*outputLog);
+			*outputLog << "\n";
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// Function: basicblock_control_flow_dependent
+// Return: true if child must execute after parent
+// A child basic block must execute after the parent basic block if either
+// 	1) parent does not unconditionally branch to child
+//	2) child is not a dominator of parent
+bool AdvisorAnalysis::basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph) {
+	
+	TerminatorInst *TI = parent->getTerminator();
+	BranchInst *BI = dyn_cast<BranchInst>(TI);
+	if (BI && BI->isUnconditional() && (BI->getSuccessor(0) == child)) {
+		return false;
+	}
+
+	// dominates -- do not use properlyDominates because it may be the same basic block
+	// check if child dominates parent
+	if (DT->dominates(DT->getNode(child), DT->getNode(parent))) {
+		return false;
+	}
+	
+	return true;
+}
 
 
 

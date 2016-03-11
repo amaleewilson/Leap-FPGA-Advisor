@@ -14,17 +14,20 @@
 #define LLVM_LIB_TRANSFORMS_FPGA_ADVISOR_ANALYSIS_H
 
 #include "llvm/Pass.h"
-#include "llvm/IR/Function.h"
+#include "llvm/PassManager.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/IR/InstVisitor.h"
-#include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/Debug.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/LoopInfo.h"
-#include "llvm/PassManager.h"
+#include "llvm/Analysis/DependenceAnalysis.h"
+#include "llvm/Analysis/MemoryDependenceAnalysis.h"
+#include "llvm/IR/Function.h"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/TypeBuilder.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -100,6 +103,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 			AU.setPreservesAll();
 			AU.addRequired<CallGraphWrapperPass>();
 			AU.addRequired<LoopInfo>();
+			AU.addRequired<DominatorTreeWrapperPass>();
+			AU.addRequired<MemoryDependenceAnalysis>();
 		}
 		AdvisorAnalysis() : ModulePass(ID) {}
 		bool runOnModule(Module &M);
@@ -133,6 +138,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool find_maximal_configuration_for_all_calls(Function *F);
 		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
+		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);
+		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
+		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
