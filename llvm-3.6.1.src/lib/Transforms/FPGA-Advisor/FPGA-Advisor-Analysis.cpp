@@ -739,11 +739,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	// iterate over all calls
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
 			fIt != executionGraph[F].end(); fIt++) {
-		scheduled |= find_maximal_configuration_for_call(F, fIt);
+		//scheduled |= find_maximal_configuration_for_call(F, fIt);
 	}
 	return scheduled;
 }
 
+#if 0
 // Function: find_maximal_configuration_for_call
 // Return: true if successful, else false
 // This function will find the maximum needed tiling for a given function
@@ -808,7 +809,9 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		bool changed = true;
 		while (changed) {
 			changed = false;
+			*outputLog << "Another one\n";
 			for (TraceGraph_iterator gIt = p.first; gIt != p.second; gIt++) {
+				*outputLog << "***\n";
 				TraceGraph_descriptor self = *gIt;
 				*outputLog << "Vertex " << self << ": " << graph[self].basicblock->getName() << "\n";
 
@@ -828,7 +831,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 						//continue;
 					}
 
-					*outputLog << "No control flow dependencies between basicblocks " << self << "\n";
+					//*outputLog << "No control flow dependencies between basicblocks " << self << "\n";
 
 
 
@@ -839,22 +842,35 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 						TraceGraph_descriptor grandparent = boost::target(*pi, graph);
 						boost::add_edge(self, grandparent, graph);
 					}
+
+					// connect parent to my children if children depend on parents
+					TraceGraph_in_edge_iterator ci, ce;
+					for (boost::tie(ci, ce) = boost::in_edges(self, graph); ci != ce; ci++) {
+						TraceGraph_descriptor children = boost::source(*ci, graph);
+						if (basicblock_is_dependent(graph[children].basicblock, graph[parent].basicblock, graph)) {
+							boost::add_edge(children, parent, graph);
+						}
+					}
 					
 					// remove edge from self to parent
 					boost::remove_edge(self, parent, graph);
 
-					//changed = true; // FIXME FIXME FIXME only executing 1 cycle of this now
+					changed = true; // FIXME FIXME FIXME only executing 1 cycle of this now
 				}
 			}
+			*outputLog << "1111\n"; // BOOKMARK debugging this dang thing
 			// print out what the schedule graph looks like after each transformation
 			boost::write_graphviz(std::cerr, graph);
 		}
+
+		*outputLog << "Final form: ";
 
 		// print out what the schedule graph looks like after
 		boost::write_graphviz(std::cerr, graph);
 
 		return true;
 }
+#endif
 
 // Function: basicblock_is_dependent
 // Return: true if child is dependent on parent and must execute after parent
@@ -1022,14 +1038,18 @@ bool AdvisorAnalysis::basicblock_control_flow_dependent(BasicBlock *child, Basic
 	TerminatorInst *TI = parent->getTerminator();
 	BranchInst *BI = dyn_cast<BranchInst>(TI);
 	if (BI && BI->isUnconditional() && (BI->getSuccessor(0) == child)) {
+		*outputLog << "no control flow dependence " << parent->getName() << " uncond branch to " << child->getName() << "\n";
 		return false;
 	}
 
 	// dominates -- do not use properlyDominates because it may be the same basic block
 	// check if child dominates parent
 	if (DT->dominates(DT->getNode(child), DT->getNode(parent))) {
+		*outputLog << "no control flow dependence " << child->getName() << " dominates " << parent->getName() << "\n";
 		return false;
 	}
+
+	*outputLog << "control flow dependency exists. " << child->getName() << " & " << parent->getName() << "\n";
 	
 	return true;
 }

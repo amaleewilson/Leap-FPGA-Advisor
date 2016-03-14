@@ -73,7 +73,8 @@ typedef struct {
 // trace graph property
 //typedef boost::property<boost::vertex_index_t, BBSchedElem> VertexProperty;
 //typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, VertexProperty > TraceGraph;
-typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, BBSchedElem > TraceGraph;
+typedef boost::adjacency_list< boost::listS, boost::vecS, boost::bidirectionalS, BBSchedElem > TraceGraph;
+//typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, BBSchedElem > TraceGraph;
 typedef std::list<TraceGraph> TraceGraphList; 
 typedef std::map<Function *, TraceGraphList> ExecGraph;
 
@@ -87,6 +88,7 @@ typedef TraceGraph::vertex_descriptor TraceGraph_descriptor;
 
 // edge iterators
 typedef TraceGraph::out_edge_iterator TraceGraph_out_edge_iterator;
+typedef TraceGraph::in_edge_iterator TraceGraph_in_edge_iterator;
 typedef TraceGraph::edge_iterator TraceGraph_edge_iterator;
 
 //typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
