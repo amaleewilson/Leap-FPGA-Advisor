@@ -44,7 +44,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "FPGA-Advisor-Analysis.h"
+#include "fpga_common.h"
+
 #include <algorithm>
 #include <fstream>
 #include <regex>
@@ -52,6 +53,7 @@
 #define DEBUG_TYPE "fpga-advisor-analysis"
 
 using namespace llvm;
+using namespace fpga;
 using std::ifstream;
 
 //===----------------------------------------------------------------------===//
@@ -61,6 +63,7 @@ using std::ifstream;
 std::error_code AEC;
 MemoryDependenceAnalysis *MDA;
 DominatorTree *DT;
+DepGraph *depGraph;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -736,13 +739,31 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	//assert(executionTrace.find(F) != executionTrace.end());
 	assert(executionGraph.find(F) != executionGraph.end());
 	bool scheduled = false;
+
+	// get the dependence graph for the function
+	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
+
 	// iterate over all calls
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
 			fIt != executionGraph[F].end(); fIt++) {
-		//scheduled |= find_maximal_configuration_for_call(F, fIt);
+		scheduled |= find_maximal_configuration_for_call(F, fIt);
 	}
 	return scheduled;
 }
+
+
+// Function: find_maximal_configuration_for_call
+// Return: true if successful, else false
+// This function will find the maximum needed tiling for a given function
+// for one call/run of the function
+// The parallelization factor will be stored in metadata for each basicblock
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it) {
+	return false;
+	
+}
+
+
+
 
 #if 0
 // Function: find_maximal_configuration_for_call
@@ -1055,6 +1076,8 @@ bool AdvisorAnalysis::basicblock_control_flow_dependent(BasicBlock *child, Basic
 }
 
 
+char AdvisorAnalysis::ID = 0;
+static RegisterPass<AdvisorAnalysis> X("fpga-advisor-analysis", "FPGA-Advisor Analysis Pass -- to be executed after instrumentation and program run", false, false);
 
 
 
