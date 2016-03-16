@@ -48,6 +48,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <fstream>
 #include <regex>
 
 #define DEBUG_TYPE "fpga-advisor-analysis"
@@ -624,6 +625,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].ID = ID;
 			currGraph[currVertex].cycStart = -1;
 			currGraph[currVertex].cycEnd = -1;
+			currGraph[currVertex].name = BB->getName().str();
 			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
 				boost::add_edge(currVertex, prevVertex, currGraph);
@@ -758,8 +760,45 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 // for one call/run of the function
 // The parallelization factor will be stored in metadata for each basicblock
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it) {
+	// for each node N in trace graph G
+		// for each parent node P of N
+			// if N can execute in parallel to P, set P.parent as N.parent
+	TraceGraph graph = *graph_it;
+	TraceGraph_iterator vi, ve;
+
+	// print the schedule graph before transformation
+	boost::write_graphviz(std::cerr, graph);
+
+	for (boost::tie(vi, ve) = boost::vertices(graph); vi != ve; vi++) {
+		*outputLog << "*** working on vertex " << graph[*vi].basicblock->getName() << "\n";
+
+		TraceGraph_out_edge_iterator oi, oe;
+		std::vector<TraceGraph_descriptor> newParents;
+		for (boost::tie(oi, oe) = boost::out_edges(*vi, graph); oi != oe; oi++) {
+			TraceGraph_descriptor parent = boost::target(*oi, graph);
+			*outputLog << "=== examine edge to " << graph[parent].basicblock->getName() << "\n";
+			find_new_parents(newParents, *vi, parent, graph);
+		}
+
+		// remove edges -> they will be replaced later
+		for (boost::tie(oi, oe) = boost::out_edges(*vi, graph); oi != oe;) {
+			TraceGraph_descriptor parent = boost::target(*oi, graph);
+			*outputLog << "--- remove edge to " << graph[parent].basicblock->getName() << "\n";
+			oi++;
+			boost::remove_edge(*vi, parent, graph);
+		}
+
+		for (unsigned i = 0; i < newParents.size(); i++) {
+			*outputLog << "+++ add edge to " << graph[newParents[i]].basicblock->getName() << "\n";
+			// add edges
+			boost::add_edge(*vi, newParents[i], graph);
+		}
+	}
+
+	// print graph after modification
+	boost::write_graphviz(std::cerr, graph);
+
 	return false;
-	
 }
 
 
@@ -1076,14 +1115,49 @@ bool AdvisorAnalysis::basicblock_control_flow_dependent(BasicBlock *child, Basic
 }
 
 
+void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newParents, TraceGraph_descriptor child, TraceGraph_descriptor parent, TraceGraph &graph) {
+	if (parent == child) {
+		assert(0);
+	}
+
+	// find the corresponding vertices on the DG
+	BasicBlock *childBB = graph[child].basicblock;
+	BasicBlock *parentBB = graph[parent].basicblock;
+
+	*outputLog << "Tracing through the execution graph -- child: " << childBB->getName() 
+				<< " parent: " << parentBB->getName() << "\n";
+
+	// if childBB can execute in parallel with parentBB i.e. childBB does not depend on parentBB
+	// then childBB can be moved up in the graph to inherit the parents of the parentBB
+	// this is done recursively until we find the final parents of the childBB whose execution
+	// the childBB *must* follow
+	if (DependenceGraph::is_basic_block_dependent(childBB, parentBB, *depGraph)) {
+		*outputLog << "Must come after parent: " << parentBB->getName() << "\n";
+		newParents.push_back(parent);
+		return;
+	} else {
+		TraceGraph_out_edge_iterator oi, oe;
+		for (boost::tie(oi, oe) = boost::out_edges(parent, graph); oi != oe; oi++) {
+			TraceGraph_descriptor grandparent = boost::target(*oi, graph);
+			find_new_parents(newParents, child, grandparent, graph);
+		}
+	}
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 char AdvisorAnalysis::ID = 0;
 static RegisterPass<AdvisorAnalysis> X("fpga-advisor-analysis", "FPGA-Advisor Analysis Pass -- to be executed after instrumentation and program run", false, false);
-
-
-
-
-
-
-
-
 

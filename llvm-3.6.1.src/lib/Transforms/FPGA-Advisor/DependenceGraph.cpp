@@ -192,15 +192,15 @@ void DependenceGraph::add_edges() {
 		// add all the dependent edges
 		for (auto di = depBBs.begin(); di != depBBs.end(); di++) {
 			BasicBlock *depBB = *di;
-			DepGraph_descriptor depVertex = get_vertex_descriptor_for_basic_block(depBB);
-			DepGraph_descriptor currVertex = get_vertex_descriptor_for_basic_block(currBB);
+			DepGraph_descriptor depVertex = get_vertex_descriptor_for_basic_block(depBB, DG);
+			DepGraph_descriptor currVertex = get_vertex_descriptor_for_basic_block(currBB, DG);
 			boost::add_edge(currVertex, depVertex, DG);
 		}
 	}
 }
 
 
-DepGraph_descriptor DependenceGraph::get_vertex_descriptor_for_basic_block(BasicBlock *BB) {
+DepGraph_descriptor DependenceGraph::get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &DG) {
 //DependenceGraph::DepGraph_descriptor DependenceGraph::get_vertex_descriptor_for_basic_block(BasicBlock *BB) {
 	DepGraph_iterator vi, ve;
 	for (boost::tie(vi, ve) = vertices(DG); vi != ve; vi++) {
@@ -244,19 +244,25 @@ bool DependenceGraph::unsupported_memory_instruction(Instruction *I) {
 }
 
 
+// Function: is_basic_block_dependent
+// Return: true if BB1 must execute after BB2 due to dependence
+// this function only cares about direct dependences, i.e. is there an edge from BB1 to BB2 in DG
+bool DependenceGraph::is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG) {
+	DepGraph_descriptor bb1 = get_vertex_descriptor_for_basic_block(BB1, DG);
+	DepGraph_descriptor bb2 = get_vertex_descriptor_for_basic_block(BB2, DG);
+
+	// unfortunately I need to iterate through all the out edges of bb1
+	DepGraph_out_edge_iterator oi, oe;
+	for (boost::tie(oi, oe) = boost::out_edges(bb1, DG); oi != oe; oi++) {
+		if (bb2 == boost::target(*oi, DG)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+
 
 char DependenceGraph::ID = 0;
 static RegisterPass<DependenceGraph> X("depgraph", "FPGA-Advisor dependence graph generator", false, false);
-
-
-
-
-
-
-
-
-
-
-
-
 

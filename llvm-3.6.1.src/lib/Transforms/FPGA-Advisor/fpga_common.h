@@ -77,11 +77,12 @@ class DependenceGraph : public FunctionPass {
 		DepGraph &getDepGraph() {
 			return DG;
 		}
+		static DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &DG);
+		static bool is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
 	
 	private:
 		void add_vertices(Function &F);
 		void add_edges();
-		DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB);
 		void insert_dependent_basic_block(std::vector<BasicBlock *> &list, BasicBlock *BB);
 		void insert_dependent_basic_block_all(std::vector<BasicBlock *> &list);
 		void insert_dependent_basic_block_all_memory(std::vector<BasicBlock *> &list);
@@ -118,6 +119,7 @@ typedef struct {
 	uint64_t ID;
 	int cycStart;
 	int cycEnd;
+	std::string name;
 } BBSchedElem;
 
 // Graph type:
@@ -199,6 +201,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
 		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
+		void find_new_parents(std::vector<TraceGraph_descriptor> &newParents, TraceGraph_descriptor child, TraceGraph_descriptor parent, TraceGraph &graph);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
