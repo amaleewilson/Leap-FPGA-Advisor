@@ -37,8 +37,10 @@
 #include "llvm/Support/CommandLine.h"
 
 #include <boost/graph/adjacency_list.hpp>
+#include <boost/graph/depth_first_search.hpp>
 #include <boost/graph/graphviz.hpp>
 
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -115,10 +117,13 @@ typedef struct {
 } FunctionInfo;
 
 typedef struct {
+	public:
+		void set_start(int _start) const { cycStart = _start;}
+		void set_end(int _end) const { cycEnd = _end;}
 	BasicBlock *basicblock;
 	uint64_t ID;
-	int cycStart;
-	int cycEnd;
+	int mutable cycStart;
+	int mutable cycEnd;
 	std::string name;
 } BBSchedElem;
 
@@ -155,6 +160,73 @@ typedef TraceGraph::edge_iterator TraceGraph_edge_iterator;
 //typedef FuncExecTrace::iterator FuncExecTrace_iterator;
 //typedef Trace::iterator Trace_iterator;
 
+class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionScheduler> {
+	public:
+		static char ID;
+		FunctionScheduler() : FunctionPass(ID) {}
+		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.setPreservesAll();
+		}
+		bool runOnFunction(Function &F) {
+			visit(F);
+			return true;
+		}
+		static int get_basic_block_latency(std::map<BasicBlock *, int> &LT, BasicBlock *BB) {
+			auto search = LT.find(BB);
+			assert(search != LT.end());
+			return search->second;
+		}
+		int get_basic_block_latency(BasicBlock *BB) {
+			auto search = latencyTable.find(BB);
+			assert(search != latencyTable.end());
+			return search->second;
+		}
+		std::map<BasicBlock *, int> &getLatencyTable() {
+			return latencyTable;
+		}
+	
+		void visitBasicBlock(BasicBlock &BB) {
+			int latency = 0;
+			// approximate latency of basic block as number of instructions
+			for (auto I = BB.begin(); I != BB.end(); I++) {
+				latency++;
+			}
+			latencyTable.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
+		}
+	
+		std::map<BasicBlock *, int> latencyTable;
+	
+}; // end class FunctionScheduler
+
+
+class ScheduleVisitor : public boost::default_dfs_visitor {
+	public:
+		TraceGraph *graph_ref;
+		std::map<BasicBlock *, int> &LT;
+		ScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT) : graph_ref(&graph), LT(_LT) {}
+
+		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
+			// find the latest finishing parent
+			// if no parent, start at 0
+			int start = -1;
+			TraceGraph_in_edge_iterator ii, ie;
+			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
+				start = std::max(start, graph[boost::source(*ii, graph)].cycEnd);
+			}
+			start += 1;
+
+			int end = start;
+			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
+
+			std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
+						" start: " << start << " end: " << end << "\n";
+			(*graph_ref)[v].set_start(start);
+			(*graph_ref)[v].set_end(end);
+		}
+}; // end class ScheduleVisitor
+
+
+
 class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 	public:
 		static char ID;
@@ -165,6 +237,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 			AU.addRequired<DominatorTreeWrapperPass>();
 			AU.addRequired<MemoryDependenceAnalysis>();
 			AU.addRequired<DependenceGraph>();
+			AU.addRequired<FunctionScheduler>();
 		}
 		AdvisorAnalysis() : ModulePass(ID) {}
 		bool runOnModule(Module &M);
@@ -196,12 +269,13 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 
 		// functions that do analysis on trace
 		bool find_maximal_configuration_for_all_calls(Function *F);
-		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it);
+		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
 		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		void find_new_parents(std::vector<TraceGraph_descriptor> &newParents, TraceGraph_descriptor child, TraceGraph_descriptor parent, TraceGraph &graph);
+		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;

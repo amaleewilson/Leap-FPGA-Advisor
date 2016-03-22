@@ -46,7 +46,6 @@
 
 #include "fpga_common.h"
 
-#include <algorithm>
 #include <fstream>
 #include <fstream>
 #include <regex>
@@ -65,6 +64,8 @@ std::error_code AEC;
 MemoryDependenceAnalysis *MDA;
 DominatorTree *DT;
 DepGraph *depGraph;
+FunctionScheduler *FS;
+std::map<BasicBlock *, int> *LT;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -374,6 +375,8 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 		*outputLog << "Max iteration is: " << loopIterInfo.maxIter << "\n";
 	}
 	*/
+
+	LT = &getAnalysis<FunctionScheduler>(*F).getLatencyTable();
 
 	// for each execution of the function found in the trace
 	// we want to find the optimal tiling for the basicblocks
@@ -748,7 +751,19 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	// iterate over all calls
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
 			fIt != executionGraph[F].end(); fIt++) {
-		scheduled |= find_maximal_configuration_for_call(F, fIt);
+		std::vector<TraceGraph_descriptor> rootVertices;
+		rootVertices.clear();
+		scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
+		// after creating trace graphs representing maximal parallelism
+		// compute maximal tiling
+		//find_maximal_tiling_for_call(F, fIt);
+
+		// annotate each node with the start and end cycles
+		scheduled |= annotate_schedule_for_call(F, fIt, rootVertices);
+
+		// after creating trace graphs, find maximal resources needed
+		// to satisfy longest antichain
+		//find_maximal_resource_requirement(F, fIt);
 	}
 	return scheduled;
 }
@@ -759,7 +774,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 // This function will find the maximum needed tiling for a given function
 // for one call/run of the function
 // The parallelization factor will be stored in metadata for each basicblock
-bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it) {
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices) {
 	// for each node N in trace graph G
 		// for each parent node P of N
 			// if N can execute in parallel to P, set P.parent as N.parent
@@ -786,6 +801,10 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 			*outputLog << "--- remove edge to " << graph[parent].basicblock->getName() << "\n";
 			oi++;
 			boost::remove_edge(*vi, parent, graph);
+		}
+
+		if (newParents.size() == 0) {
+			rootVertices.push_back(*vi);
 		}
 
 		for (unsigned i = 0; i < newParents.size(); i++) {
@@ -918,7 +937,6 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 					changed = true; // FIXME FIXME FIXME only executing 1 cycle of this now
 				}
 			}
-			*outputLog << "1111\n"; // BOOKMARK debugging this dang thing
 			// print out what the schedule graph looks like after each transformation
 			boost::write_graphviz(std::cerr, graph);
 		}
@@ -1145,8 +1163,32 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newPa
 }
 
 
+// Function: find_maximal_tiling_for_call
+// This function finds the maximal tiling needed to get 
+//void AdvisorAnalysis::find_maximal_tiling_for_call(Function *F, TraceGraphList_iterator graph_it) {
+	//TraceGraph graph = *graph_it;
+//}
 
 
+// Function: annotate_schedule_for_call
+// Return: true if successful, false otherwise
+bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices) {
+	// get the graph
+	TraceGraph graph = *graph_it;
+
+	// get the vertices which have no parents
+	// these are the vertices that can be scheduled right away
+	for (std::vector<TraceGraph_descriptor>::iterator rV = rootVertices.begin();
+			rV != rootVertices.end(); rV++) {
+		ScheduleVisitor vis(graph, *LT);
+		//annotate_schedule_subgraph_for_call(graph, TraceGraph_descriptor node);
+		boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
+	}
+	return true;
+}
+
+
+// Function: 
 
 
 
@@ -1161,3 +1203,5 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newPa
 char AdvisorAnalysis::ID = 0;
 static RegisterPass<AdvisorAnalysis> X("fpga-advisor-analysis", "FPGA-Advisor Analysis Pass -- to be executed after instrumentation and program run", false, false);
 
+char FunctionScheduler::ID = 0;
+static RegisterPass<FunctionScheduler> Z("func-scheduler", "FPGA-Advisor Analysis Function Scheduler Pass", false, false);
