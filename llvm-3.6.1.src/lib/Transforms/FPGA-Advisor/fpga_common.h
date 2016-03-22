@@ -201,9 +201,11 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 
 class ScheduleVisitor : public boost::default_dfs_visitor {
 	public:
+		int mutable lastCycle;
 		TraceGraph *graph_ref;
+		int *lastCycle_ref;
 		std::map<BasicBlock *, int> &LT;
-		ScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT) : graph_ref(&graph), LT(_LT) {}
+		ScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle) {}
 
 		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
@@ -222,6 +224,10 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 						" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
+
+			// keep track of the last cycle as seen by the scheduler
+			*lastCycle_ref = std::max(*lastCycle_ref, end);
+			std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
 		}
 }; // end class ScheduleVisitor
 
@@ -275,7 +281,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
 		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		void find_new_parents(std::vector<TraceGraph_descriptor> &newParents, TraceGraph_descriptor child, TraceGraph_descriptor parent, TraceGraph &graph);
-		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices);
+		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int &lastCycle);
+		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int lastCycle);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;

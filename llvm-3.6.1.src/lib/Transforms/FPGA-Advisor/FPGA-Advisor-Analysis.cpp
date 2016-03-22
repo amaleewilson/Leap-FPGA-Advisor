@@ -758,12 +758,16 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 		// compute maximal tiling
 		//find_maximal_tiling_for_call(F, fIt);
 
+		int lastCycle = -1;
+
 		// annotate each node with the start and end cycles
-		scheduled |= annotate_schedule_for_call(F, fIt, rootVertices);
+		scheduled |= annotate_schedule_for_call(F, fIt, rootVertices, lastCycle);
+
+		*outputLog << "Last Cycle: " << lastCycle << "\n";
 
 		// after creating trace graphs, find maximal resources needed
 		// to satisfy longest antichain
-		//find_maximal_resource_requirement(F, fIt);
+		scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
 	}
 	return scheduled;
 }
@@ -1172,7 +1176,7 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newPa
 
 // Function: annotate_schedule_for_call
 // Return: true if successful, false otherwise
-bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices) {
+bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int &lastCycle) {
 	// get the graph
 	TraceGraph graph = *graph_it;
 
@@ -1180,20 +1184,90 @@ bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_ite
 	// these are the vertices that can be scheduled right away
 	for (std::vector<TraceGraph_descriptor>::iterator rV = rootVertices.begin();
 			rV != rootVertices.end(); rV++) {
-		ScheduleVisitor vis(graph, *LT);
-		//annotate_schedule_subgraph_for_call(graph, TraceGraph_descriptor node);
+		ScheduleVisitor vis(graph, *LT, lastCycle);
+		// FIXME: this ought to be bfs
 		boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
 	}
+
 	return true;
 }
 
 
-// Function: 
+// Function: find_maximal_resource_requirement
+// Return: true if successful, false otherwise
+bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int lastCycle) {
+	// get the graph
+	TraceGraph graph = *graph_it;
 
+	// keep a chain of active basic blocks
+	// at first, the active blocks are the roots (which start execution at cycle 0)
+	std::vector<TraceGraph_descriptor> antichain = rootVertices;
 
+	// keep track of timestamp
+	for (int timestamp = 0; timestamp < lastCycle; timestamp++) {
+		*outputLog << "Examine Cycle: " << timestamp << "\n";
+		std::map<BasicBlock *, int> activeBBs;
+		activeBBs.clear();
+		// look at all active basic blocks and annotate the IR
+		// annotate annotate annotate
+		for (auto it = antichain.begin(); it != antichain.end(); it++) {
+			BasicBlock *BB = graph[*it].basicblock;
+			auto search = activeBBs.find(BB);
+			if (search != activeBBs.end()) {
+				// BB exists in activeBBs, increment count
+				search->second++;
+			} else {
+				// else add it to activeBBs list
+				activeBBs.insert(std::make_pair(BB, 0));
+			}
+		}
 
+		// update the IR
+		// will store the replication factor of each basic block as metadata
+		// could not find a way to directly attach metadata to each basic block
+		// will instead attach to the terminator instruction of each basic block
+		// this will be an issue if the basic block is merged/split...
+		for (auto it = activeBBs.begin(); it != activeBBs.end(); it++) {
+			Instruction *inst = dyn_cast<Instruction>(it->first->getTerminator());
+			// look at pre-existing replication factor
+			LLVMContext &C = inst->getContext();
+			//MDNode *N = MDNode::get(C, MDString::get(C, "FPGA_ADVISOR_REPLICATION_FACTOR"));
+			// inst->setMetadata(repFactorStr, N);
+			int repFactor = 0; // zero indicates CPU execution
 
+			std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+			MDName += inst->getParent()->getName().str();
+			MDNode *M = inst->getMetadata(MDName);
 
+			if (M && M->getOperand(0)) {
+				std::string repFactorStr = cast<MDString>(M->getOperand(0))->getString().str();
+				repFactor = stoi(repFactorStr);
+			} // else metadata was not set, repFactor is 0
+
+			repFactor = std::max(repFactor, it->second);
+			std::string repFactorStr = std::to_string(repFactor);
+
+			MDNode *N = MDNode::get(C, MDString::get(C, repFactorStr));
+
+			inst->setMetadata(MDName, N);
+		}
+
+		// remove blocks which end this cycle and add their children
+		for (auto it = antichain.begin(); it != antichain.end(); /*done in loop body*/) {
+			if (graph[*it].cycEnd == timestamp) {
+				TraceGraph_in_edge_iterator ii, ie;
+				for (boost::tie(ii, ie) = boost::in_edges(*it, graph); ii != ie; ii++) {
+					antichain.push_back(boost::source(*ii, graph));
+				}
+				auto remove = it;
+				it++;
+				antichain.erase(remove);
+				continue;
+			}
+			it++;
+		}
+	}
+}
 
 
 
