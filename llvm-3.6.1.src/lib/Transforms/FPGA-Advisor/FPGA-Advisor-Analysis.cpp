@@ -748,27 +748,36 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	// get the dependence graph for the function
 	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
 
-	// iterate over all calls
-	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
-			fIt != executionGraph[F].end(); fIt++) {
-		std::vector<TraceGraph_descriptor> rootVertices;
-		rootVertices.clear();
-		scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
-		// after creating trace graphs representing maximal parallelism
-		// compute maximal tiling
-		//find_maximal_tiling_for_call(F, fIt);
+	// The ending condition should be determined by the user input of acceptable
+	// area and latency constraints
+	//while (1) {
+		// iterate over all calls
+		for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
+				fIt != executionGraph[F].end(); fIt++) {
+			std::vector<TraceGraph_descriptor> rootVertices;
+			rootVertices.clear();
+			scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
+			// after creating trace graphs representing maximal parallelism
+			// compute maximal tiling
+			//find_maximal_tiling_for_call(F, fIt);
+	
+			int lastCycle = -1;
+	
+			// annotate each node with the start and end cycles
+			scheduled |= annotate_schedule_for_call(F, fIt, rootVertices, lastCycle);
+	
+			*outputLog << "Last Cycle: " << lastCycle << "\n";
+	
+			// after creating trace graphs, find maximal resources needed
+			// to satisfy longest antichain
+			scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
+	
+			// use gradient descent method
+			modify_resource_requirement(F, fIt);
 
-		int lastCycle = -1;
+		}
+	//}
 
-		// annotate each node with the start and end cycles
-		scheduled |= annotate_schedule_for_call(F, fIt, rootVertices, lastCycle);
-
-		*outputLog << "Last Cycle: " << lastCycle << "\n";
-
-		// after creating trace graphs, find maximal resources needed
-		// to satisfy longest antichain
-		scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
-	}
 	return scheduled;
 }
 
@@ -793,28 +802,49 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 
 		TraceGraph_out_edge_iterator oi, oe;
 		std::vector<TraceGraph_descriptor> newParents;
+		std::vector<TraceGraph_descriptor> oldParents;
 		for (boost::tie(oi, oe) = boost::out_edges(*vi, graph); oi != oe; oi++) {
 			TraceGraph_descriptor parent = boost::target(*oi, graph);
 			*outputLog << "=== examine edge to " << graph[parent].basicblock->getName() << "\n";
 			find_new_parents(newParents, *vi, parent, graph);
+			*outputLog << "=== examined edge " << *vi << " -> " << parent << "\n";
 		}
 
 		// remove edges -> they will be replaced later
-		for (boost::tie(oi, oe) = boost::out_edges(*vi, graph); oi != oe;) {
-			TraceGraph_descriptor parent = boost::target(*oi, graph);
-			*outputLog << "--- remove edge to " << graph[parent].basicblock->getName() << "\n";
-			oi++;
-			boost::remove_edge(*vi, parent, graph);
-		}
+		// remember to also add edges from child to parents that are no longer my parents
+		// so that we keep that dependence
+		boost::clear_out_edges(*vi, graph);
 
+		// if vertex now has no parents, it is another root
 		if (newParents.size() == 0) {
 			rootVertices.push_back(*vi);
 		}
+
+		// sort the two lists for easier comparison
+		std::sort(newParents.begin(), newParents.end());
+		std::sort(oldParents.begin(), oldParents.end());
 
 		for (unsigned i = 0; i < newParents.size(); i++) {
 			*outputLog << "+++ add edge to " << graph[newParents[i]].basicblock->getName() << "\n";
 			// add edges
 			boost::add_edge(*vi, newParents[i], graph);
+			*outputLog << "+++ added edge " << *vi << " -> " << newParents[i] << "\n";
+			auto search = std::find(oldParents.begin(), oldParents.end(), newParents[i]);
+			if (search != oldParents.end()) {
+				oldParents.erase(search);
+			}
+		}
+
+		// if any oldParents still exist, they have been abandoned, so connect my children to them
+		for (unsigned i = 0; i < oldParents.size(); i++) {
+			// add edge from child to old parents
+			TraceGraph_in_edge_iterator ii, ie;
+			for (boost::tie(ii, ie) = boost::in_edges(*vi, graph); ii != ie; ii++) {
+				*outputLog << "+++ add edge to " << graph[oldParents[i]].basicblock->getName() << "\n";
+				TraceGraph_descriptor child = boost::source(*ii, graph);
+				boost::add_edge(child, oldParents[i], graph);
+				*outputLog << "+++ added edge " << child << " -> " << oldParents[i] << "\n";
+			}
 		}
 	}
 
@@ -1270,6 +1300,12 @@ bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphL
 }
 
 
+// Function: modify_resource_requirement
+// This function will use the gradient descent method to reduce the resource requirements
+// for the program
+void AdvisorAnalysis::modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it) {
+	// add code here...
+}
 
 
 
