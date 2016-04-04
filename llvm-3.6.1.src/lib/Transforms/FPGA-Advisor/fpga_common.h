@@ -38,6 +38,7 @@
 
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/depth_first_search.hpp>
+#include <boost/graph/breadth_first_search.hpp>
 #include <boost/graph/graphviz.hpp>
 
 #include <algorithm>
@@ -202,10 +203,10 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 class ScheduleVisitor : public boost::default_dfs_visitor {
 	public:
 		int mutable lastCycle;
-		TraceGraph *graph_ref;
+		TraceGraphList_iterator graph_ref;
 		int *lastCycle_ref;
 		std::map<BasicBlock *, int> &LT;
-		ScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle) {}
+		ScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle) {}
 
 		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
@@ -220,17 +221,84 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 			int end = start;
 			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
 
-			std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
+			std::cerr << "Schedule vertex: (" << v << ") " << graph[v].basicblock->getName().str() <<
 						" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
 
 			// keep track of the last cycle as seen by the scheduler
 			*lastCycle_ref = std::max(*lastCycle_ref, end);
-			std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
+			//std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
 		}
 }; // end class ScheduleVisitor
 
+
+class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
+	public:
+		int mutable lastCycle;
+		TraceGraph *graph_ref;
+		int *lastCycle_ref;
+		int *cpuCycle_ref;
+		std::map<BasicBlock *, int> &LT;
+		std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable;
+		ConstrainedScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
+
+		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
+			// find the latest finishing parent
+			// if no parent, start at 0
+			int start = -1;
+			TraceGraph_in_edge_iterator ii, ie;
+			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
+				start = std::max(start, graph[boost::target(*ii, graph)].cycEnd);
+			}
+			start += 1;
+
+			// this differs from the maximal parallelism configuration scheduling
+			// in that it also considers resource requirement
+			
+			// first sort the vector
+			auto search = resourceTable.find(graph[v].basicblock);
+			//assert(search != resourceTable.end());
+			if (search == resourceTable.end()) {
+				// if not found, could mean that either
+				// a) basic block to be executed on cpu
+				// b) resource table not initialized properly o.o
+				std::cerr << "Basic block " << graph[v].name << " not found in resource table.\n";
+				assert(0);
+			}
+
+			bool cpu = (search->second).first;
+			int resourceReady = UINT_MAX;
+			std::vector<unsigned> &resourceVector = search->second.second;
+			if (cpu) { // cpu resource flag
+				resourceReady = *cpuCycle_ref;
+			} else {
+				std::sort(resourceVector.begin(), resourceVector.end());
+				resourceReady = resourceVector.front();
+			}
+
+			start = std::max(start, resourceReady);
+
+			int end = start;
+			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
+			
+			// update the occupied resource with the new end cycle
+			if (cpu) {
+				*cpuCycle_ref = end;
+			} else {
+				resourceVector.front() = end;
+			}
+
+			std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
+						" start: " << start << " end: " << end << "\n";
+			(*graph_ref)[v].set_start(start);
+			(*graph_ref)[v].set_end(end);
+
+			// keep track of last cycle as seen by scheduler
+			*lastCycle_ref = std::max(*lastCycle_ref, end);
+			std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
+		}
+}; // end class ConstrainedScheduleVisitor
 
 
 class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
@@ -284,6 +352,14 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int &lastCycle);
 		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int lastCycle);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
+		void find_optimal_configuration_for_all_calls(Function *F);
+		int incremental_gradient_descent(Function *F, BasicBlock *&removeBB);
+		bool decrement_basic_block_instance_count(BasicBlock *BB);
+		bool increment_basic_block_instance_count(BasicBlock *BB);
+		int get_basic_block_instance_count(BasicBlock *BB);
+		void find_root_vertices(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it);
+		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
+		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;

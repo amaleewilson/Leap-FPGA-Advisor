@@ -44,6 +44,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+// FIXME Need to change the direction of the trace graph.... sighh
+
 #include "fpga_common.h"
 
 #include <fstream>
@@ -58,6 +60,8 @@ using std::ifstream;
 
 //===----------------------------------------------------------------------===//
 // Some globals ... is that bad? :/
+// I can move this into the class and clean up every time a different function
+// is being analyzed. The problem is that I have written a module pass.
 //===----------------------------------------------------------------------===//
 
 std::error_code AEC;
@@ -66,6 +70,7 @@ DominatorTree *DT;
 DepGraph *depGraph;
 FunctionScheduler *FS;
 std::map<BasicBlock *, int> *LT;
+int cpuCycle;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -114,6 +119,7 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	*outputLog << "FPGA-Advisor Analysis Pass Starting.\n";
 
 	mod = &M;
+
 
 	//=------------------------------------------------------=//
 	// [2] Static analyses and setup
@@ -333,50 +339,11 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 		*outputLog << "Function contains unsynthesizable constructs, moving on.\n";
 		return false;
 	}
-	// now that we have the trace imported into memory, let's mark
-	// each loop with a max iteration count
-	// This is the algorithm:
-	// 	For each loop:
-	//		iterate through the trace
-	//			if (currBB = loop.Header)
-	//				maxIt++
-	//			else if (currBB ! belongs in loop)
-	//				loop.maxIt = MAX(loop.maxIt, maxIt)
-	//				maxIt = 0
-	//			else // currBB belongs in loop
-	//				// do nothing
-
-	// for each loop
-	/*
-	assert(functionMap.find(F) != functionMap.end());
-	FunctionInfo *fInfo = (functionMap.find(F))->second;
-	for (auto loopIt = fInfo->loopList.begin(); loopIt != fInfo->loopList.end(); loopIt++) {
-		// iterate through the trace
-		LoopIterInfo loopIterInfo = *loopIt;
-		Loop *loop = loopIterInfo.loopInfo;
-		BasicBlock *header = loop->getHeader();
-
-		*outputLog << "Annotating loop: " << header->getName() << "\n";
-		uint64_t maxIterations = 0;
-		for (std::list<BasicBlock *>::iterator traceBB = executionTrace.begin(); traceBB != executionTrace.end(); traceBB++) {
-			BasicBlock *currBB = *traceBB;
-			if ((currBB)->getParent() != header->getParent()) {
-				continue;
-			}
-			if (currBB == header) {
-				maxIterations++;
-			} else if (!loop->contains(currBB)) {
-				loopIterInfo.maxIter = std::max(maxIterations, loopIterInfo.maxIter);
-				maxIterations = 0;
-			} else {
-				// block belongs in loop
-			}
-		}
-		*outputLog << "Max iteration is: " << loopIterInfo.maxIter << "\n";
-	}
-	*/
 
 	LT = &getAnalysis<FunctionScheduler>(*F).getLatencyTable();
+
+	// get the dependence graph for the function
+	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
 
 	// for each execution of the function found in the trace
 	// we want to find the optimal tiling for the basicblocks
@@ -384,6 +351,20 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	// configuration, which can be found by scheduling independent
 	// sic blocks in the earliest cycle that it is allowed to be executed
 	find_maximal_configuration_for_all_calls(F);
+
+	// by this point, the basic blocks have been annotated by the maximal
+	// replication factor
+	// build a framework that is able to methodically perturb the basic block
+	// to follow the gradient descent method of restricting basic block
+	// replication to achieve most optimal area-latency result
+	// Description of gradient descent method:
+	//	- determine differential in performance/area for each basic block
+	//		i.e. reduce the basic block resource by 1 to determine the 
+	//		impact on performance
+	//	- move in the direction of maximum performance/area
+	//		i.e. reduce the basic block which provides the least performance/area
+	//	- for now, we will finish iterating when we find a local maximum of performance/area
+	find_optimal_configuration_for_all_calls(F);
 
 	return true;
 }
@@ -631,7 +612,8 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].name = BB->getName().str();
 			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
-				boost::add_edge(currVertex, prevVertex, currGraph);
+				boost::add_edge(prevVertex, currVertex, currGraph);
+				//boost::add_edge(currVertex, prevVertex, currGraph);
 			}
 			prevVertex = currVertex;
 			//boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
@@ -741,17 +723,16 @@ Function *AdvisorAnalysis::find_function_by_name(std::string funcName) {
 // Does not look across function boundaries
 // The parallelization factor will be stored in metadata for each basicblock
 bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
+	*outputLog << __func__ << " for function " << F->getName() << "\n";;
 	//assert(executionTrace.find(F) != executionTrace.end());
 	assert(executionGraph.find(F) != executionGraph.end());
 	bool scheduled = false;
-
-	// get the dependence graph for the function
-	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
 
 	// The ending condition should be determined by the user input of acceptable
 	// area and latency constraints
 	//while (1) {
 		// iterate over all calls
+		*outputLog << "There are " << executionGraph[F].size() << " calls to " << F->getName() << "\n";
 		for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
 				fIt != executionGraph[F].end(); fIt++) {
 			std::vector<TraceGraph_descriptor> rootVertices;
@@ -760,6 +741,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 			// after creating trace graphs representing maximal parallelism
 			// compute maximal tiling
 			//find_maximal_tiling_for_call(F, fIt);
+
+			TraceGraph graph = *fIt;
+			*outputLog << "root vertices are: ";
+			for (auto rV = rootVertices.begin(); rV != rootVertices.end(); rV++) {
+				*outputLog << "root: [" << *rV << "]->" << graph[*rV].name << "\n";
+			}
 	
 			int lastCycle = -1;
 	
@@ -767,13 +754,13 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 			scheduled |= annotate_schedule_for_call(F, fIt, rootVertices, lastCycle);
 	
 			*outputLog << "Last Cycle: " << lastCycle << "\n";
-	
+
 			// after creating trace graphs, find maximal resources needed
 			// to satisfy longest antichain
 			scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
 	
 			// use gradient descent method
-			modify_resource_requirement(F, fIt);
+			//modify_resource_requirement(F, fIt);
 
 		}
 	//}
@@ -788,32 +775,42 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 // for one call/run of the function
 // The parallelization factor will be stored in metadata for each basicblock
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices) {
+	*outputLog << __func__ << " for function " << F->getName() << "\n";
 	// for each node N in trace graph G
 		// for each parent node P of N
 			// if N can execute in parallel to P, set P.parent as N.parent
-	TraceGraph graph = *graph_it;
+	//TraceGraph graph = *graph_it;
+	TraceGraphList_iterator graph = graph_it;
 	TraceGraph_iterator vi, ve;
 
+	// for printing labels in graph output
+	boost::dynamic_properties dpTG;
+	dpTG.property("label", get(&BBSchedElem::name, *graph));
+	dpTG.property("id", get(&BBSchedElem::ID, *graph));
+	dpTG.property("start", get(&BBSchedElem::cycStart, *graph));
+	dpTG.property("end", get(&BBSchedElem::cycEnd, *graph));
+
 	// print the schedule graph before transformation
-	boost::write_graphviz(std::cerr, graph);
+	boost::write_graphviz_dp(std::cerr, *graph, dpTG, std::string("id"));
 
-	for (boost::tie(vi, ve) = boost::vertices(graph); vi != ve; vi++) {
-		*outputLog << "*** working on vertex " << graph[*vi].basicblock->getName() << "\n";
+	for (boost::tie(vi, ve) = boost::vertices(*graph); vi != ve; vi++) {
+		*outputLog << "*** working on vertex " << (*graph)[*vi].basicblock->getName() << "\n";
 
-		TraceGraph_out_edge_iterator oi, oe;
+		TraceGraph_in_edge_iterator ii, ie;
+		//TraceGraph_out_edge_iterator oi, oe;
 		std::vector<TraceGraph_descriptor> newParents;
 		std::vector<TraceGraph_descriptor> oldParents;
-		for (boost::tie(oi, oe) = boost::out_edges(*vi, graph); oi != oe; oi++) {
-			TraceGraph_descriptor parent = boost::target(*oi, graph);
-			*outputLog << "=== examine edge to " << graph[parent].basicblock->getName() << "\n";
-			find_new_parents(newParents, *vi, parent, graph);
+		for (boost::tie(ii, ie) = boost::in_edges(*vi, *graph); ii != ie; ii++) {
+			TraceGraph_descriptor parent = boost::source(*ii, *graph);
+			*outputLog << "=== examine edge to " << (*graph)[parent].basicblock->getName() << "\n";
+			find_new_parents(newParents, *vi, parent, *graph);
 			*outputLog << "=== examined edge " << *vi << " -> " << parent << "\n";
 		}
 
 		// remove edges -> they will be replaced later
 		// remember to also add edges from child to parents that are no longer my parents
 		// so that we keep that dependence
-		boost::clear_out_edges(*vi, graph);
+		boost::clear_in_edges(*vi, *graph);
 
 		// if vertex now has no parents, it is another root
 		if (newParents.size() == 0) {
@@ -825,9 +822,10 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		std::sort(oldParents.begin(), oldParents.end());
 
 		for (unsigned i = 0; i < newParents.size(); i++) {
-			*outputLog << "+++ add edge to " << graph[newParents[i]].basicblock->getName() << "\n";
+			*outputLog << "+++ add edge to " << (*graph)[newParents[i]].basicblock->getName() << "\n";
 			// add edges
-			boost::add_edge(*vi, newParents[i], graph);
+			boost::add_edge(newParents[i], *vi, *graph);
+			//boost::add_edge(*vi, newParents[i], *graph);
 			*outputLog << "+++ added edge " << *vi << " -> " << newParents[i] << "\n";
 			auto search = std::find(oldParents.begin(), oldParents.end(), newParents[i]);
 			if (search != oldParents.end()) {
@@ -838,18 +836,18 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		// if any oldParents still exist, they have been abandoned, so connect my children to them
 		for (unsigned i = 0; i < oldParents.size(); i++) {
 			// add edge from child to old parents
-			TraceGraph_in_edge_iterator ii, ie;
-			for (boost::tie(ii, ie) = boost::in_edges(*vi, graph); ii != ie; ii++) {
-				*outputLog << "+++ add edge to " << graph[oldParents[i]].basicblock->getName() << "\n";
-				TraceGraph_descriptor child = boost::source(*ii, graph);
-				boost::add_edge(child, oldParents[i], graph);
-				*outputLog << "+++ added edge " << child << " -> " << oldParents[i] << "\n";
+			TraceGraph_out_edge_iterator oi, oe;
+			for (boost::tie(oi, oe) = boost::out_edges(*vi, *graph); oi != oe; oi++) {
+				*outputLog << "+++ add edge from " << (*graph)[oldParents[i]].basicblock->getName() << "\n";
+				TraceGraph_descriptor child = boost::target(*ii, *graph);
+				boost::add_edge(oldParents[i], child, *graph);
+				*outputLog << "+++ added edge " << oldParents[i] << " -> " << child << "\n";
 			}
 		}
 	}
 
 	// print graph after modification
-	boost::write_graphviz(std::cerr, graph);
+	boost::write_graphviz_dp(std::cerr, *graph, dpTG, std::string("id"));
 
 	return false;
 }
@@ -917,7 +915,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		std::pair<TraceGraph_iterator, TraceGraph_iterator> p;
 		TraceGraph graph = *graph_it;
 		// print out what the schedule graph looks like before
-		boost::write_graphviz(std::cerr, graph);
+		//boost::write_graphviz(std::cerr, graph);
 		p = vertices(graph);
 		bool changed = true;
 		while (changed) {
@@ -972,13 +970,13 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 				}
 			}
 			// print out what the schedule graph looks like after each transformation
-			boost::write_graphviz(std::cerr, graph);
+			//boost::write_graphviz(std::cerr, graph);
 		}
 
 		*outputLog << "Final form: ";
 
 		// print out what the schedule graph looks like after
-		boost::write_graphviz(std::cerr, graph);
+		//boost::write_graphviz(std::cerr, graph);
 
 		return true;
 }
@@ -1188,9 +1186,9 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newPa
 		newParents.push_back(parent);
 		return;
 	} else {
-		TraceGraph_out_edge_iterator oi, oe;
-		for (boost::tie(oi, oe) = boost::out_edges(parent, graph); oi != oe; oi++) {
-			TraceGraph_descriptor grandparent = boost::target(*oi, graph);
+		TraceGraph_in_edge_iterator ii, ie;
+		for (boost::tie(ii, ie) = boost::in_edges(parent, graph); ii != ie; ii++) {
+			TraceGraph_descriptor grandparent = boost::source(*ii, graph);
 			find_new_parents(newParents, child, grandparent, graph);
 		}
 	}
@@ -1208,16 +1206,37 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_descriptor> &newPa
 // Return: true if successful, false otherwise
 bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int &lastCycle) {
 	// get the graph
-	TraceGraph graph = *graph_it;
+	TraceGraphList_iterator graph = graph_it;
+	//TraceGraph graph = *graph_it;
 
 	// get the vertices which have no parents
 	// these are the vertices that can be scheduled right away
+	/*
 	for (std::vector<TraceGraph_descriptor>::iterator rV = rootVertices.begin();
 			rV != rootVertices.end(); rV++) {
 		ScheduleVisitor vis(graph, *LT, lastCycle);
-		// FIXME: this ought to be bfs
-		boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
-	}
+		*outputLog << "bfs on root " << (*graph)[*rV].name << "\n";
+		//boost::breadth_first_search(*graph, vertex(0, *graph), boost::visitor(vis).root_vertex(*rV));
+		boost::depth_first_search(*graph, boost::visitor(vis).root_vertex(*rV));
+	}*/
+
+	// use depth first visit to discover all the vertices in the graph
+	// do not need to give the root node of each disconnected subgraph
+	// use dfs instead of bfs because bfs only traverses nodes through a graph
+	// that is *reachable* from a starting node
+	// also, since there are no resource constraints, each basic block
+	// will be scheduled as early as possible, so no need for bfs here
+	ScheduleVisitor vis(graph, *LT, lastCycle);
+	boost::depth_first_search(*graph, boost::visitor(vis));
+
+
+	// for printing labels in graph output
+	boost::dynamic_properties dpTG;
+	dpTG.property("label", get(&BBSchedElem::name, *graph));
+	dpTG.property("id", get(&BBSchedElem::ID, *graph));
+	dpTG.property("start", get(&BBSchedElem::cycStart, *graph));
+	dpTG.property("end", get(&BBSchedElem::cycEnd, *graph));
+	boost::write_graphviz_dp(std::cerr, *graph, dpTG, std::string("id"));
 
 	return true;
 }
@@ -1226,8 +1245,11 @@ bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_ite
 // Function: find_maximal_resource_requirement
 // Return: true if successful, false otherwise
 bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int lastCycle) {
+	*outputLog << __func__ << "\n";
+
 	// get the graph
-	TraceGraph graph = *graph_it;
+	TraceGraphList_iterator graph = graph_it;
+	//TraceGraph graph = *graph_it;
 
 	// keep a chain of active basic blocks
 	// at first, the active blocks are the roots (which start execution at cycle 0)
@@ -1236,28 +1258,39 @@ bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphL
 	// keep track of timestamp
 	for (int timestamp = 0; timestamp < lastCycle; timestamp++) {
 		*outputLog << "Examine Cycle: " << timestamp << "\n";
+		// activeBBs keeps track of the number of a particular 
+		// basic block resource that is needed to execute all
+		// the basic blocks within the anti-chain for each given
+		// cycle
+		// it stores a pair of basic block ptr and an int representing
+		// the number of that basic block needed
 		std::map<BasicBlock *, int> activeBBs;
 		activeBBs.clear();
+
+		*outputLog << "anti-chain in cycle " << timestamp << ":\n";
 		// look at all active basic blocks and annotate the IR
 		// annotate annotate annotate
 		for (auto it = antichain.begin(); it != antichain.end(); it++) {
-			BasicBlock *BB = graph[*it].basicblock;
+			BasicBlock *BB = (*graph)[*it].basicblock;
 			auto search = activeBBs.find(BB);
 			if (search != activeBBs.end()) {
 				// BB exists in activeBBs, increment count
 				search->second++;
 			} else {
 				// else add it to activeBBs list
-				activeBBs.insert(std::make_pair(BB, 0));
+				activeBBs.insert(std::make_pair(BB, 1));
 			}
+			*outputLog << BB->getName() << "\n";
 		}
 
+		*outputLog << "activeBBs:\n";
 		// update the IR
 		// will store the replication factor of each basic block as metadata
 		// could not find a way to directly attach metadata to each basic block
 		// will instead attach to the terminator instruction of each basic block
 		// this will be an issue if the basic block is merged/split...
 		for (auto it = activeBBs.begin(); it != activeBBs.end(); it++) {
+			*outputLog << it->first->getName() << "\n";
 			Instruction *inst = dyn_cast<Instruction>(it->first->getTerminator());
 			// look at pre-existing replication factor
 			LLVMContext &C = inst->getContext();
@@ -1281,20 +1314,274 @@ bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphL
 
 			inst->setMetadata(MDName, N);
 		}
-
+		
 		// remove blocks which end this cycle and add their children
-		for (auto it = antichain.begin(); it != antichain.end(); /*done in loop body*/) {
-			if (graph[*it].cycEnd == timestamp) {
-				TraceGraph_in_edge_iterator ii, ie;
-				for (boost::tie(ii, ie) = boost::in_edges(*it, graph); ii != ie; ii++) {
-					antichain.push_back(boost::source(*ii, graph));
-				}
+		for (auto it = antichain.begin(); /*done in loop body*/; /*done in loop body*/) {
+			if (it == antichain.end()) {
+				break;
+			}
+			if ((*graph)[*it].cycEnd == timestamp) {
+				TraceGraph_out_edge_iterator oi, oe;
+				TraceGraph_descriptor removed = *it;
 				auto remove = it;
-				it++;
-				antichain.erase(remove);
+				it = antichain.erase(remove);
+				for (boost::tie(oi, oe) = boost::out_edges(removed, *graph); oi != oe; oi++) {
+					antichain.push_back(boost::target(*oi, *graph));
+				}
 				continue;
 			}
 			it++;
+		}
+
+	}
+	return true;
+}
+
+
+// Function: find_optimal_configuration_for_all_calls
+// Performs the gradient descent method for function F until it
+// arrives at a local minima for area-delay product
+void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
+	*outputLog << __func__ << "\n";
+	assert(executionGraph.find(F) != executionGraph.end());
+	
+	bool done = false;
+
+	// the constraint we care about is area delay product
+	// we want to find the (local) minimum by the gradient
+	// descent method
+	unsigned minAreaDelay = UINT_MAX;
+	int areaDelay = INT_MAX;
+
+	while (!done) {
+		*outputLog << "while looping\n";
+		BasicBlock *removeBB;
+		removeBB = NULL;
+		*outputLog << "11\n";
+		areaDelay = incremental_gradient_descent(F, removeBB);
+		*outputLog << "22\n";
+		if (areaDelay < 0) {
+			// there are no more basic blocks that can
+			// be reduced in count
+			done = true;
+		} else if ((unsigned) areaDelay < minAreaDelay) {
+			minAreaDelay = (unsigned) areaDelay;
+			continue;
+		}
+		*outputLog << "33\n";
+		// since this incremental gradient descent step caused
+		// area delay product to increase, undo this move
+		increment_basic_block_instance_count(removeBB);
+		*outputLog << "44\n";
+		done = true;
+	}
+}
+
+
+// Function: incremental_gradient_descent
+// Performs one incremental step of gradient descent for function F
+// i.e. it will reduce the # of basic block instances for each basic block
+// whose instance is greater than 1 and chose the block which makes the
+// least contribution to performance/area
+// Always return the best area delay product after removal, if no removals exist
+// i.e. all of program is on CPU, return -1
+int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB) {
+	unsigned minAreaDelay = UINT_MAX;
+	//BasicBlock *removeBB = NULL;
+	removeBB = NULL;
+
+	for (auto BB = F->begin(); BB != F->end(); BB++) {	
+		*outputLog << "Performing removal of basic block " << BB->getName() << "\n";
+		if (decrement_basic_block_instance_count(BB)) {
+			*outputLog << "decremented successfully. Do analysis.\n";
+			// iterate through all calls to this function in the trace
+			// keep a sum of how long the program takes to finish, will
+			// be multiplied by area for an area delay product estimate
+			unsigned latency = 0;
+			for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+					fIt != executionGraph[F].end(); fIt++) {
+				std::vector<TraceGraph_descriptor> rootVertices;
+				rootVertices.clear();
+				find_root_vertices(rootVertices, fIt);
+				latency += schedule_with_resource_constraints(rootVertices, fIt, F);
+			}
+
+			unsigned area = 1;
+			//area = get_area_requirement(F);
+			unsigned areaDelay = latency * area;
+			if (areaDelay < minAreaDelay) {
+				// record the basic block whose removal leads
+				// to minimizing area-delay product
+				minAreaDelay = areaDelay;
+				removeBB = BB;
+			}
+
+			// restore the basic block count after removal
+			increment_basic_block_instance_count(BB);
+		} // else continue
+	}
+
+	// make the best move
+	if (removeBB == NULL) {
+		return -1;
+	} else {
+		*outputLog << "remove BB " << removeBB->getName() << "\n";
+		decrement_basic_block_instance_count(removeBB);
+		return minAreaDelay;
+	}
+}
+
+
+// Function: schedule_with_resource_constraints
+// Return: latency of execution of trace
+// This function will use the execution trace graph generated previously 
+// and the resource constraints embedded in the IR as metadata to determine
+// the latency of the particular function call instance represented by this
+// execution trace
+unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F) {
+	*outputLog << __func__ << "\n";
+
+	TraceGraph graph = *graph_it;
+	// perform the scheduling with resource considerations
+	
+	// use hash table to keep track of resources available
+	// the key is the basicblock resource	
+	// each key indexes into a vector of unsigned integers
+	// the number of elements in the vector correspond to the
+	// number of available resources of that basic block
+	// the vector contains unsigned ints which represent the cycle
+	// at which the resource next becomes available
+	// the bool of the pair in the value is the CPU resource flag
+	// if set to true, no additional hardware is required
+	// however, a global value is used to keep track of the cpu
+	// idleness
+	std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+	resourceTable.clear();
+
+	//===----------------------------------------------------===//
+	// Populate resource table
+	//===----------------------------------------------------===//
+	initialize_resource_table(F, resourceTable);
+
+	// reset the cpu free cycle global!
+	cpuCycle = -1;
+
+	int lastCycle = -1;
+
+	//===----------------------------------------------------===//
+	// Use breadth first search to perform the scheduling
+	// with resource constraints
+	//===----------------------------------------------------===//
+	for (std::vector<TraceGraph_descriptor>::iterator rV = roots.begin();
+			rV != roots.end(); rV++) {
+		ConstrainedScheduleVisitor vis(graph, *LT/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
+		boost::breadth_first_search(graph, vertex(0, graph), boost::visitor(vis).root_vertex(*rV));
+		//boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
+	}
+
+	return 0;
+}
+
+
+// Function: find_root_vertices
+// Finds all vertices with in degree 0 -- root of subgraph/tree
+void AdvisorAnalysis::find_root_vertices(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it) {
+	TraceGraph graph = *graph_it;
+	TraceGraph_iterator vi, ve;
+	for (boost::tie(vi, ve) = vertices(graph); vi != ve; vi++) {
+		if (boost::in_degree(*vi, graph) == 0) {
+			roots.push_back(*vi);
+		}
+	}
+}
+
+
+// Function: decrement_basic_block_instance_count
+// Return: false if decrement not successful
+// Modify basic block metadata to denote the number of basic block instances
+// needed
+bool AdvisorAnalysis::decrement_basic_block_instance_count(BasicBlock *BB) {
+	int repFactor = get_basic_block_instance_count(BB);
+	if (repFactor <= 0) { // 0 represents CPU execution, anything above 0 means HW accel
+		return false;
+	}
+
+	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+	MDName += BB->getName().str();
+	LLVMContext &C = BB->getContext();
+	MDNode *N = MDNode::get(C, MDString::get(C, std::to_string(repFactor-1)));
+	BB->getTerminator()->setMetadata(MDName, N);
+	
+	return true;
+}
+
+// Function: increment_basic_block_instance_count
+// Return: false if decrement not successful
+// Modify basic block metadata to denote the number of basic block instances
+// needed
+bool AdvisorAnalysis::increment_basic_block_instance_count(BasicBlock *BB) {
+	int repFactor = get_basic_block_instance_count(BB);
+
+	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+	MDName += BB->getName().str();
+	LLVMContext &C = BB->getContext();
+	MDNode *N = MDNode::get(C, MDString::get(C, std::to_string(repFactor+1)));
+	BB->getTerminator()->setMetadata(MDName, N);
+
+	return true;
+}
+
+// Function: get_basic_block_instance_count
+// Return: the number of instances of this basic block from metadata
+int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
+	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+	MDName += BB->getName().str();
+	MDNode *M = BB->getTerminator()->getMetadata(MDName);
+
+	int repFactor = -1;
+
+	assert(M);
+	assert(M->getOperand(0));
+
+	std::string repFactorStr = cast<MDString>(M->getOperand(0))->getString().str();
+	repFactor = stoi(repFactorStr);
+
+	*outputLog << __func__ << " metadata: ";
+	BB->getTerminator()->print(*outputLog);
+	*outputLog << " replication factor: " << repFactor << "\n";
+
+	return repFactor;
+}
+
+
+// Function: initialize_resource_table
+// The resource table represents the resources needed for this program
+// the resources we need to consider are:
+// HW logic: represented by individual basic blocks
+// CPU: represented by a flag
+// other??
+// FIXME: integrate the cpu
+void AdvisorAnalysis::initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable) {
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
+		int repFactor = get_basic_block_instance_count(BB);
+		if (repFactor < 0) {
+			continue;
+		}
+
+		if (repFactor == 0) {
+			// cpu
+			std::vector<unsigned> resourceVector(0);
+			resourceTable.insert(std::make_pair(BB, std::make_pair(true, resourceVector)));
+			*outputLog << "Created entry in resource table for basic block: " << BB->getName()
+						<< " using cpu resources.\n";
+		} else {
+			// fpga
+			// create a vector
+			std::vector<unsigned> resourceVector(repFactor, 0);
+			resourceTable.insert(std::make_pair(BB, std::make_pair(false, resourceVector)));
+
+			*outputLog << "Created entry in resource table for basic block: " << BB->getName()
+						<< " with " << repFactor << " entries.\n";
 		}
 	}
 }
@@ -1306,6 +1593,7 @@ bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphL
 void AdvisorAnalysis::modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it) {
 	// add code here...
 }
+
 
 
 
