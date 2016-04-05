@@ -68,8 +68,10 @@ std::error_code AEC;
 MemoryDependenceAnalysis *MDA;
 DominatorTree *DT;
 DepGraph *depGraph;
-FunctionScheduler *FS;
+// latency table
 std::map<BasicBlock *, int> *LT;
+// area table
+std::map<BasicBlock *, int> *AT;
 int cpuCycle;
 
 //===----------------------------------------------------------------------===//
@@ -341,6 +343,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	}
 
 	LT = &getAnalysis<FunctionScheduler>(*F).getLatencyTable();
+	AT = &getAnalysis<FunctionAreaEstimator>(*F).getAreaTable();
 
 	// get the dependence graph for the function
 	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
@@ -1390,7 +1393,7 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 	//BasicBlock *removeBB = NULL;
 	removeBB = NULL;
 
-	for (auto BB = F->begin(); BB != F->end(); BB++) {	
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		*outputLog << "Performing removal of basic block " << BB->getName() << "\n";
 		if (decrement_basic_block_instance_count(BB)) {
 			*outputLog << "decremented successfully. Do analysis.\n";
@@ -1406,8 +1409,16 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 				latency += schedule_with_resource_constraints(rootVertices, fIt, F);
 			}
 
-			unsigned area = 1;
-			//area = get_area_requirement(F);
+			// if the entire design executes on the CPU, we will use unit
+			// area since no extra area is needed
+			// otherwise each basic block resource is approximated by the
+			// FunctionAreaEstimator class, the *area* incurred only applies
+			// to designs that use limited resources on the FPGA or resources
+			// which may lead to worse performance
+			// i.e. if a basic block requires simple LUT logic to implement,
+			// no extra cost will be incurred as we can assume these resources
+			// are abundant...
+			unsigned area = get_area_requirement(F);
 			unsigned areaDelay = latency * area;
 			if (areaDelay < minAreaDelay) {
 				// record the basic block whose removal leads
@@ -1587,6 +1598,23 @@ void AdvisorAnalysis::initialize_resource_table(Function *F, std::map<BasicBlock
 }
 
 
+// Function: get_area_requirement
+// Return: a unitless value representing the area 'cost' of a design
+// I'm sure this will need a lot of calibration...
+unsigned AdvisorAnalysis::get_area_requirement(Function *F) {
+	// baseline area required for cpu
+	int area = 1;
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
+		int areaBB = FunctionAreaEstimator::get_basic_block_area(*AT, BB);
+		int repFactor = get_basic_block_instance_count(BB);
+		area += areaBB * repFactor;
+	}
+	return area;
+}
+
+
+
+
 // Function: modify_resource_requirement
 // This function will use the gradient descent method to reduce the resource requirements
 // for the program
@@ -1603,3 +1631,6 @@ static RegisterPass<AdvisorAnalysis> X("fpga-advisor-analysis", "FPGA-Advisor An
 
 char FunctionScheduler::ID = 0;
 static RegisterPass<FunctionScheduler> Z("func-scheduler", "FPGA-Advisor Analysis Function Scheduler Pass", false, false);
+
+char FunctionAreaEstimator::ID = 0;
+static RegisterPass<FunctionAreaEstimator> Y("func-area-estimator", "FPGA-Advisor Analysis Function Area Estimator Pass", false, false);
