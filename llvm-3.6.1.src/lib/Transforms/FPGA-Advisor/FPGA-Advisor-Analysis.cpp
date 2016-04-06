@@ -615,7 +615,8 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].name = BB->getName().str();
 			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
-				boost::add_edge(prevVertex, currVertex, currGraph);
+				// initial edge weight is 0, assume all performed on fpga
+				boost::add_edge(prevVertex, currVertex, 0, currGraph);
 				//boost::add_edge(currVertex, prevVertex, currGraph);
 			}
 			prevVertex = currVertex;
@@ -827,7 +828,8 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		for (unsigned i = 0; i < newParents.size(); i++) {
 			*outputLog << "+++ add edge to " << (*graph)[newParents[i]].basicblock->getName() << "\n";
 			// add edges
-			boost::add_edge(newParents[i], *vi, *graph);
+			// initial edge weight is 0, no fpga<->cpu transitions
+			boost::add_edge(newParents[i], *vi, 0, *graph);
 			//boost::add_edge(*vi, newParents[i], *graph);
 			*outputLog << "+++ added edge " << *vi << " -> " << newParents[i] << "\n";
 			auto search = std::find(oldParents.begin(), oldParents.end(), newParents[i]);
@@ -843,7 +845,8 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 			for (boost::tie(oi, oe) = boost::out_edges(*vi, *graph); oi != oe; oi++) {
 				*outputLog << "+++ add edge from " << (*graph)[oldParents[i]].basicblock->getName() << "\n";
 				TraceGraph_descriptor child = boost::target(*ii, *graph);
-				boost::add_edge(oldParents[i], child, *graph);
+				// initial edge weight is 0, no fpga<->cpu transitions
+				boost::add_edge(oldParents[i], child, 0, *graph);
 				*outputLog << "+++ added edge " << oldParents[i] << " -> " << child << "\n";
 			}
 		}
@@ -1395,6 +1398,7 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		*outputLog << "Performing removal of basic block " << BB->getName() << "\n";
+		bool modify = false;
 		if (decrement_basic_block_instance_count(BB)) {
 			*outputLog << "decremented successfully. Do analysis.\n";
 			// iterate through all calls to this function in the trace
@@ -1406,6 +1410,10 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 				std::vector<TraceGraph_descriptor> rootVertices;
 				rootVertices.clear();
 				find_root_vertices(rootVertices, fIt);
+
+				// need to update edge weights before scheduling
+				update_transition_delay(fIt);
+				
 				latency += schedule_with_resource_constraints(rootVertices, fIt, F);
 			}
 
@@ -1611,6 +1619,47 @@ unsigned AdvisorAnalysis::get_area_requirement(Function *F) {
 	}
 	return area;
 }
+
+
+// Function: update_transition_delay
+// updates the trace execution graph edge weights
+void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
+	TraceGraph_edge_iterator ei, ee;
+	for (boost::tie(ei, ee) = edges(*graph); ei != ee; ei++) {
+		TraceGraph_descriptor s = boost::source(*ei, *graph);
+		TraceGraph_descriptor t = boost::target(*ei, *graph);
+		bool sHwExec = (0 < get_basic_block_instance_count((*graph)[s].basicblock));
+		bool tHwExec = (0 < get_basic_block_instance_count((*graph)[t].basicblock));
+		// add edge weight <=> transition delay when crossing a hw/cpu boundary
+		unsigned delay = 0;
+		if (sHwExec ^ tHwExec) {
+			bool CPUToHW = true;
+			if (sHwExec == true) {
+				// fpga -> cpu
+				CPUToHW = false;
+			}
+			delay = get_transition_delay((*graph)[s].basicblock, (*graph)[t].basicblock, CPUToHW);
+		} else {
+			// should have no transition penalty, double make sure
+			delay = 0;
+		}
+		boost::put(boost::edge_weight_t(), *graph, *ei, delay);
+	}
+}
+
+
+// Function: get_transition_delay
+// Return: an unsigned int representing the transitional delay between switching from either
+// fpga to cpu, or cpu to fpga
+unsigned AdvisorAnalysis::get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW) {
+	unsigned delay = 10; // some baseline delay
+	// need to do something here...
+	// the delay shouldn't be constant?
+	return delay;
+}
+
+
+
 
 
 

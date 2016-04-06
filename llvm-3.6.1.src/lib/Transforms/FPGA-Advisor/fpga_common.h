@@ -117,6 +117,9 @@ typedef struct {
 	std::vector<StoreInst *> storeList;
 } FunctionInfo;
 
+
+// TraceGraph vertex property struct representing each individual
+// scheduling element (basic block granularity)
 typedef struct {
 	public:
 		void set_start(int _start) const { cycStart = _start;}
@@ -128,6 +131,9 @@ typedef struct {
 	std::string name;
 } BBSchedElem;
 
+// TraceGraph edge weight property representing transition delay
+// between fpga and cpu
+typedef boost::property<boost::edge_weight_t, unsigned> TransitionDelay;
 // Graph type:
 // STL list container for OutEdge List
 // STL vector container for vertices
@@ -136,7 +142,7 @@ typedef struct {
 // trace graph property
 //typedef boost::property<boost::vertex_index_t, BBSchedElem> VertexProperty;
 //typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, VertexProperty > TraceGraph;
-typedef boost::adjacency_list< boost::listS, boost::vecS, boost::bidirectionalS, BBSchedElem > TraceGraph;
+typedef boost::adjacency_list< boost::listS, boost::vecS, boost::bidirectionalS, BBSchedElem, TransitionDelay > TraceGraph;
 //typedef boost::adjacency_list< boost::listS, boost::vecS, boost::directedS, BBSchedElem > TraceGraph;
 typedef std::list<TraceGraph> TraceGraphList; 
 typedef std::map<Function *, TraceGraphList> ExecGraph;
@@ -398,7 +404,8 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			int start = -1;
 			TraceGraph_in_edge_iterator ii, ie;
 			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
-				start = std::max(start, graph[boost::target(*ii, graph)].cycEnd);
+				int transitionDelay = (int) boost::get(boost::edge_weight_t(), graph, *ii);
+				start = std::max(start, graph[boost::target(*ii, graph)].cycEnd + transitionDelay);
 			}
 			start += 1;
 
@@ -511,6 +518,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
 		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
 		unsigned get_area_requirement(Function *F);
+		void update_transition_delay(TraceGraphList_iterator graph);
+		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
