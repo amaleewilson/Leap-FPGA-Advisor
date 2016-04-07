@@ -153,7 +153,8 @@ typedef TraceGraphList::iterator TraceGraphList_iterator;
 typedef ExecGraph::iterator ExecGraph_iterator;
 
 // vertex descriptor
-typedef TraceGraph::vertex_descriptor TraceGraph_descriptor;
+typedef TraceGraph::vertex_descriptor TraceGraph_vertex_descriptor;
+typedef TraceGraph::edge_descriptor TraceGraph_edge_descriptor;
 
 // edge iterators
 typedef TraceGraph::out_edge_iterator TraceGraph_out_edge_iterator;
@@ -363,7 +364,7 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 		std::map<BasicBlock *, int> &LT;
 		ScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle) {}
 
-		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
+		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
 			// if no parent, start at 0
 			int start = -1;
@@ -376,8 +377,8 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 			int end = start;
 			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
 
-			std::cerr << "Schedule vertex: (" << v << ") " << graph[v].basicblock->getName().str() <<
-						" start: " << start << " end: " << end << "\n";
+			//std::cerr << "Schedule vertex: (" << v << ") " << graph[v].basicblock->getName().str() <<
+			//			" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
 
@@ -398,7 +399,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 		std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable;
 		ConstrainedScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
-		void discover_vertex(TraceGraph_descriptor v, const TraceGraph &graph) const {
+		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
 			// if no parent, start at 0
 			int start = -1;
@@ -445,14 +446,14 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 				resourceVector.front() = end;
 			}
 
-			std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
-						" start: " << start << " end: " << end << "\n";
+			//std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
+			//			" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
 
 			// keep track of last cycle as seen by scheduler
 			*lastCycle_ref = std::max(*lastCycle_ref, end);
-			std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
+			//std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
 		}
 }; // end class ConstrainedScheduleVisitor
 
@@ -475,6 +476,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void visitFunction(Function &F);
 		void visitBasicBlock(BasicBlock &BB);
 		void visitInstruction(Instruction &I);
+		static int get_basic_block_instance_count(BasicBlock *BB);
 
 	private:
 		// functions
@@ -500,26 +502,27 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 
 		// functions that do analysis on trace
 		bool find_maximal_configuration_for_all_calls(Function *F);
-		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices);
+		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
 		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
-		void find_new_parents(std::vector<TraceGraph_descriptor> &newParents, TraceGraph_descriptor child, TraceGraph_descriptor parent, TraceGraph &graph);
-		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int &lastCycle);
-		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_descriptor> &rootVertices, int lastCycle);
+		void find_new_parents(std::vector<TraceGraph_vertex_descriptor> &newParents, TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraph &graph);
+		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle);
+		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int lastCycle);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
 		void find_optimal_configuration_for_all_calls(Function *F);
 		int incremental_gradient_descent(Function *F, BasicBlock *&removeBB);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
-		int get_basic_block_instance_count(BasicBlock *BB);
-		void find_root_vertices(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it);
-		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
+		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
+		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
 		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
+
+		void print_basic_block_configuration(Function *F);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -544,6 +547,50 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		//DepGraph depGraph;
 
 }; // end class AdvisorAnalysis
+
+// put after AdvisorAnalysis class -- uses a function from class
+// TraceGraph custom vertex writer for execution trace graph output to dotfile
+template <class TraceGraph>
+class TraceGraphVertexWriter {
+	public:
+		TraceGraphVertexWriter(TraceGraph& _graph) : graph(_graph) {}
+		template <class TraceGraph_vertex_descriptor>
+		void operator()(std::ostream& out, const TraceGraph_vertex_descriptor &v) const {
+			/*
+			out << "[shape = \"record\" label=\"<r0 fontcolor=Red> " << graph[v].cycStart << "| <r1>"
+				<< graph[v].name << "| <r2>"
+				<< graph[v].cycEnd << "\"]";
+			*/
+			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
+			out	<< "<tr><td bgcolor=\"green\" border=\"1\"> " << graph[v].cycStart << "</td></tr>";
+			if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
+				out	<< "<tr><td bgcolor=\"gray\" border=\"1\"> " << graph[v].name << "</td></tr>";
+			} else {
+				out	<< "<tr><td border=\"1\"> " << graph[v].name << "</td></tr>";
+			}
+			out	<< "<tr><td bgcolor=\"cyan\" border=\"1\"> " << graph[v].cycEnd << "</td></tr>";
+			out	<< "</table>>]";
+		}
+	private:
+		TraceGraph &graph;
+}; // end class TraceGraphVertexWriter
+
+template <class TraceGraph>
+class TraceGraphEdgeWriter {
+	public:
+		TraceGraphEdgeWriter(TraceGraph& _graph) : graph(_graph) {}
+		template <class TraceGraph_edge_descriptor>
+		void operator()(std::ostream& out, const TraceGraph_edge_descriptor &e) const {
+			unsigned delay = boost::get(boost::edge_weight_t(), graph, e);
+			if (delay > 0) {
+				out << "[color=\"blue\" penwidth=\"3\" label=\"" << delay << "\"]";
+			}
+		}
+	private:
+		TraceGraph &graph;
+}; // end class TraceGraphEdgeWriter
+
+
 
 } // end fpga namespace
 

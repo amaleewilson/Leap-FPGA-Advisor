@@ -30,6 +30,13 @@ raw_ostream *outputLog;
 std::error_code DEC;
 
 //===----------------------------------------------------------------------===//
+// Dependence Graph Pass options
+//===----------------------------------------------------------------------===//
+
+static cl::opt<bool> PrintGraph("print-dg", cl::desc("Enable printing of dependence graph in dot format"),
+		cl::Hidden, cl::init(false));
+
+//===----------------------------------------------------------------------===//
 // Helper functions
 //===----------------------------------------------------------------------===//
 
@@ -39,7 +46,7 @@ std::error_code DEC;
 
 // Function: runOnFunction
 bool DependenceGraph::runOnFunction(Function &F) {
-	std::cerr << "runOnFunction: " << F.getName().str() << "\n";
+	//std::cerr << "runOnFunction: " << F.getName().str() << "\n";
 	// create output log
 	raw_fd_ostream OL("dependence-graph.log", DEC, sys::fs::F_RW);
 	outputLog = &OL;
@@ -60,14 +67,17 @@ bool DependenceGraph::runOnFunction(Function &F) {
 
 	// add each BB into DG
 	add_vertices(F);
-	boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
+	if (PrintGraph) {
+		boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
+	}
 
 	// now process each vertex by adding edge to the vertex that
 	// the current vertex depends on
 	add_edges();
 	//boost::write_graphviz(std::cerr, DG);
-	boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
-
+	if (PrintGraph) {
+		boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
+	}
 	return true;
 }
 
