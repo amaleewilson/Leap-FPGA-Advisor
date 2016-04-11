@@ -122,13 +122,22 @@ typedef struct {
 // scheduling element (basic block granularity)
 typedef struct {
 	public:
+		void set_min_start(int _start) const { minCycStart = _start;}
+		void set_min_end(int _end) const { minCycEnd = _end;}
 		void set_start(int _start) const { cycStart = _start;}
 		void set_end(int _end) const { cycEnd = _end;}
-	BasicBlock *basicblock;
-	uint64_t ID;
-	int mutable cycStart;
-	int mutable cycEnd;
-	std::string name;
+
+		BasicBlock *basicblock;
+		uint64_t ID;
+		// the min cycles represent the earliest the basic block may
+		// execute, this equates to the scheduling without resource
+		// constraint
+		int mutable minCycStart;
+		int mutable minCycEnd;
+		// cycStart and cycEnd are the actual schedules
+		int mutable cycStart;
+		int mutable cycEnd;
+		std::string name;
 } BBSchedElem;
 
 // TraceGraph edge weight property representing transition delay
@@ -356,6 +365,7 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 }; // end class FunctionAreaEstimator
 
 
+// Unconstrained scheduler -- does not account for resource limitations in scheduling
 class ScheduleVisitor : public boost::default_dfs_visitor {
 	public:
 		int mutable lastCycle;
@@ -370,7 +380,7 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 			int start = -1;
 			TraceGraph_in_edge_iterator ii, ie;
 			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
-				start = std::max(start, graph[boost::source(*ii, graph)].cycEnd);
+				start = std::max(start, graph[boost::source(*ii, graph)].minCycEnd);
 			}
 			start += 1;
 
@@ -379,6 +389,8 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 
 			//std::cerr << "Schedule vertex: (" << v << ") " << graph[v].basicblock->getName().str() <<
 			//			" start: " << start << " end: " << end << "\n";
+			(*graph_ref)[v].set_min_start(start);
+			(*graph_ref)[v].set_min_end(end);
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
 
@@ -406,7 +418,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			TraceGraph_in_edge_iterator ii, ie;
 			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
 				int transitionDelay = (int) boost::get(boost::edge_weight_t(), graph, *ii);
-				start = std::max(start, graph[boost::target(*ii, graph)].cycEnd + transitionDelay);
+				start = std::max(start, graph[boost::target(*ii, graph)].minCycEnd + transitionDelay);
 			}
 			start += 1;
 
@@ -510,9 +522,12 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void find_new_parents(std::vector<TraceGraph_vertex_descriptor> &newParents, TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraph &graph);
 		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle);
 		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int lastCycle);
+		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
 		void find_optimal_configuration_for_all_calls(Function *F);
 		int incremental_gradient_descent(Function *F, BasicBlock *&removeBB);
+		void set_basic_block_instance_count(BasicBlock *BB, int value);
+		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
@@ -523,6 +538,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
 
 		void print_basic_block_configuration(Function *F);
+		void print_optimal_configuration_for_all_calls(Function *F);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -564,9 +580,9 @@ class TraceGraphVertexWriter {
 			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
 			out	<< "<tr><td bgcolor=\"green\" border=\"1\"> " << graph[v].cycStart << "</td></tr>";
 			if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
-				out	<< "<tr><td bgcolor=\"gray\" border=\"1\"> " << graph[v].name << "</td></tr>";
+				out	<< "<tr><td bgcolor=\"gray\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
 			} else {
-				out	<< "<tr><td border=\"1\"> " << graph[v].name << "</td></tr>";
+				out	<< "<tr><td border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";
 			}
 			out	<< "<tr><td bgcolor=\"cyan\" border=\"1\"> " << graph[v].cycEnd << "</td></tr>";
 			out	<< "</table>>]";

@@ -67,16 +67,17 @@ bool DependenceGraph::runOnFunction(Function &F) {
 
 	// add each BB into DG
 	add_vertices(F);
-	if (PrintGraph) {
-		boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
-	}
+	//if (PrintGraph) {
+	//	boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
+	//}
 
 	// now process each vertex by adding edge to the vertex that
 	// the current vertex depends on
 	add_edges();
 	//boost::write_graphviz(std::cerr, DG);
 	if (PrintGraph) {
-		boost::write_graphviz(std::cerr, DG, boost::make_label_writer(&NameVec[0]));
+		std::ofstream outfile("dg.dot");
+		boost::write_graphviz(outfile, DG, boost::make_label_writer(&NameVec[0]));
 	}
 	return true;
 }
