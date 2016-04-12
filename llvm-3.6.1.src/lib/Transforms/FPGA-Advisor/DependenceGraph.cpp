@@ -273,6 +273,19 @@ bool DependenceGraph::is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2,
 }
 
 
+// Function: get_all_basic_block_dependencies
+void DependenceGraph::get_all_basic_block_dependencies(DepGraph &DG, BasicBlock *BB, std::vector<BasicBlock *> &deps) {
+	DepGraph_descriptor v = get_vertex_descriptor_for_basic_block(BB, DG);
+	// the basic blocks that this basic block is dependent on are the targets of the out edges
+	// of vertex v
+	DepGraph_out_edge_iterator oi, oe;
+	for (boost::tie(oi, oe) = boost::out_edges(v, DG); oi != oe; oi++) {
+		DepGraph_descriptor dep = boost::target(*oi, DG);
+		BasicBlock *depBB = DG[dep];
+		// there should be no redundant edges.
+		deps.push_back(depBB);
+	}
+}
 
 char DependenceGraph::ID = 0;
 static RegisterPass<DependenceGraph> X("depgraph", "FPGA-Advisor dependence graph generator", false, false);

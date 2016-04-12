@@ -537,7 +537,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	// unique ID for each basic block executed
 	int ID = 0;
 
-	TraceGraph::vertex_descriptor prevVertex = 0;
+	//TraceGraph::vertex_descriptor prevVertex = 0;
 
 	while (std::getline(fin, line)) {
 		// There are 3 types of messages:
@@ -570,28 +570,29 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			}
 			
 			//==----------------------------------------------------------------==//
-			//ExecTrace_iterator fTrace = executionTrace.find(F);
-			//if (fTrace == executionTrace.end()) {
-			//	FuncExecTrace emptyList;
-			//	executionTrace.insert(std::make_pair(F, emptyList));
-			//	Trace newList;
-			//	executionTrace[F].push_back(newList);
-			//} else {
-			//	// function exists
-			//	Trace newList;
-			//	fTrace->second.push_back(newList);
-			//}
-			//==----------------------------------------------------------------==//
 			ExecGraph_iterator fGraph = executionGraph.find(F);
-			if (fGraph == executionGraph.end()) {
+			ExecutionOrderListMap_iterator fOrder = executionOrderListMap.find(F);
+			if (fGraph == executionGraph.end() && fOrder == executionOrderListMap.end()) {
 				TraceGraphList emptyList;
 				executionGraph.insert(std::make_pair(F, emptyList));
 				TraceGraph newGraph;
 				executionGraph[F].push_back(newGraph);
-			} else {
+
+				ExecutionOrderList emptyOrderList;
+				executionOrderListMap.insert(std::make_pair(F, emptyOrderList));
+				ExecutionOrder newOrder;
+				newOrder.clear();
+				executionOrderListMap[F].push_back(newOrder);
+			} else if (fGraph != executionGraph.end() && fOrder != executionOrderListMap.end()) {
 				// function exists
 				TraceGraph newGraph;
 				fGraph->second.push_back(newGraph);
+
+				ExecutionOrder newOrder;
+				newOrder.clear();
+				fOrder->second.push_back(newOrder);
+			} else {
+				assert(0);
 			}
 			//==----------------------------------------------------------------==//
 		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
@@ -655,6 +656,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].minCycStart = -1;
 			currGraph[currVertex].minCycEnd = -1;
 			currGraph[currVertex].name = BB->getName().str();
+			/*
 			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
 				// initial edge weight is 0, assume all performed on fpga
@@ -662,8 +664,24 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				//boost::add_edge(currVertex, prevVertex, currGraph);
 			}
 			prevVertex = currVertex;
+			*/
 			//boost::write_graphviz(std::cerr, executionGraph[BB->getParent()].back());
 			//==----------------------------------------------------------------==//
+
+			// add to execution order
+			// check if BB exists
+			ExecutionOrder &currOrder = executionOrderListMap[BB->getParent()].back();
+			ExecutionOrder_iterator search = currOrder.find(BB);
+			if (search == currOrder.end()) {
+				// insert BB into order
+				std::vector<TraceGraph_vertex_descriptor> newVector;
+				newVector.clear();
+				newVector.push_back(currVertex);
+				currOrder.insert(std::make_pair(BB, std::make_pair(-1, newVector)));
+			} else {
+				// append to order
+				search->second.second.push_back(currVertex);
+			}
 
 			// increment the node ID
 			ID++;
@@ -772,6 +790,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	*outputLog << __func__ << " for function " << F->getName() << "\n";;
 	//assert(executionTrace.find(F) != executionTrace.end());
 	assert(executionGraph.find(F) != executionGraph.end());
+	assert(executionOrderListMap.find(F) != executionOrderListMap.end());
 	bool scheduled = false;
 
 	initialize_basic_block_instance_count(F);
@@ -781,14 +800,22 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	//while (1) {
 		// iterate over all calls
 		*outputLog << "There are " << executionGraph[F].size() << " calls to " << F->getName() << "\n";
-		for (TraceGraphList_iterator fIt = executionGraph[F].begin(); 
-				fIt != executionGraph[F].end(); fIt++) {
+		TraceGraphList_iterator fIt;
+		ExecutionOrderList_iterator eoIt;
+		for (fIt = executionGraph[F].begin(),
+				eoIt = executionOrderListMap[F].begin(); 
+				fIt != executionGraph[F].end(),
+				eoIt != executionOrderListMap[F].end(); fIt++, eoIt++) {
 			std::vector<TraceGraph_vertex_descriptor> rootVertices;
 			rootVertices.clear();
-			scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
+			scheduled |= find_maximal_configuration_for_call(F, fIt, eoIt, rootVertices);
+			//scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
 			// after creating trace graphs representing maximal parallelism
 			// compute maximal tiling
 			//find_maximal_tiling_for_call(F, fIt);
+
+			// find root vertices
+			find_root_vertices(rootVertices, fIt);
 
 			TraceGraph graph = *fIt;
 			*outputLog << "root vertices are: ";
@@ -816,7 +843,126 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	return scheduled;
 }
 
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
+	*outputLog << __func__ << " for function " << F->getName() << "\n";
 
+	print_execution_order(execOrder);
+
+	TraceGraph_iterator vi, ve;
+	for (boost::tie(vi, ve) = boost::vertices(*graph); vi != ve; vi++) {
+		TraceGraph_vertex_descriptor self = *vi;
+		BasicBlock *selfBB = (*graph)[self].basicblock;
+		*outputLog << "Inspecting vertex (" << self << ") " << selfBB->getName() << "\n";
+
+		// staticDeps vector keeps track of basic blocks that this basic block is 
+		// dependent on
+		std::vector<BasicBlock *> staticDeps;
+		staticDeps.clear();
+		DependenceGraph::get_all_basic_block_dependencies(*depGraph, selfBB, staticDeps);
+
+		*outputLog << "Found number of static dependences: " << staticDeps.size() << "\n";
+
+		// dynamicDeps vector keeps track of vertices in dynamic execution trace
+		std::vector<TraceGraph_vertex_descriptor> dynamicDeps;
+		dynamicDeps.clear();
+
+		// fill the dynamicDeps vector by finding the most recent past execution of the
+		// dependent basic blocks in the dynamic trace
+		for (auto sIt = staticDeps.begin(); sIt != staticDeps.end(); sIt++) {
+			BasicBlock *depBB = *sIt;
+			// find corresponding execution order vector
+			auto search = (*execOrder).find(depBB);
+			*outputLog << "Some\n";
+			assert(search != (*execOrder).end());
+
+			int currExec = search->second.first;
+			std::vector<TraceGraph_vertex_descriptor> &execOrderVec = search->second.second;
+			*outputLog << "Thing\n";
+			*outputLog << currExec << " " << execOrderVec.size() << "\n";
+			assert((int) currExec <= (int) execOrderVec.size());
+			*outputLog << "old\n";
+
+			if (currExec < 0) {
+				*outputLog << "Dependent basic block hasn't been executed yet. " << depBB->getName() << "\n";
+				// don't append dynamic dependence
+			} else {
+				// the dependent basic block has been executed before this basic block, so possibly
+				// need to add a dependence edge
+				TraceGraph_vertex_descriptor dynDep = execOrderVec[currExec];
+				dynamicDeps.push_back(dynDep);
+			}
+		}
+
+		*outputLog << "Found number of dynamic dependences (before): " << dynamicDeps.size() << "\n";
+
+		// remove redundant dynamic dependence entries
+		// these are the dynamic dependences which another dynamic dependence is directly
+		// or indirectly dependent on
+		remove_redundant_dynamic_dependencies(graph, dynamicDeps);
+
+		*outputLog << "Found number of dynamic dependences (after): " << dynamicDeps.size() << "\n";
+		
+		// add dependency edges to graph
+		for (auto it = dynamicDeps.begin(); it != dynamicDeps.end(); it++) {
+			boost::add_edge(*it, self, *graph);
+		}
+
+		// update the execution order index for current basic block after it has been processed
+		auto search = (*execOrder).find(selfBB);
+		assert(search != (*execOrder).end());
+		search->second.first++;
+	}
+}
+
+void AdvisorAnalysis::print_execution_order(ExecutionOrderList_iterator execOrder) {
+	*outputLog << "Execution Order: \n";
+	for (auto it = (*execOrder).begin(); it != (*execOrder).end(); it++) {
+		*outputLog << it->first->getName() << " ";
+		for (auto eit = it->second.second.begin(); eit != it->second.second.end(); eit++) {
+			*outputLog << *eit << " ";
+		}
+		*outputLog << "\n";
+	}
+}
+
+
+// sort trace graph vertex descriptor vector in reverse order
+bool reverse_vertex_sort(TraceGraph_vertex_descriptor a, TraceGraph_vertex_descriptor b) {
+	return b < a;
+}
+
+// Function: remove_redundant_dynamic_dependencies
+// Given a dynamic trace graph and a vector of vertices for which a executed basic block is
+// dependent, remove the dependent vertices which are redundant. A redundant vertices are 
+// those which are depended on by other dependent vertices.
+void AdvisorAnalysis::remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps) {
+	// sort in reverse order, may have more chance to find and remove redundancies if
+	// we start with vertices that executed later
+	std::sort(dynamicDeps.begin(), dynamicDeps.end(), reverse_vertex_sort);
+
+	for (auto it = dynamicDeps.begin(); it != dynamicDeps.end(); it++) {
+		TraceGraph_vertex_descriptor v = *it;
+		recursively_remove_redundant_dynamic_dependencies(graph, dynamicDeps, it, v);
+	}
+}
+
+
+void AdvisorAnalysis::recursively_remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps, std::vector<TraceGraph_vertex_descriptor>::iterator search, TraceGraph_vertex_descriptor v) {
+	// if v already exists as a parent/ancestor, remove from list because it is redundant
+	std::vector<TraceGraph_vertex_descriptor>::iterator found = std::find(search+1, dynamicDeps.end(), v);
+	if (found != dynamicDeps.end()) {
+		dynamicDeps.erase(found);
+	}
+
+	// for each of its predecessors, recurse
+	TraceGraph_in_edge_iterator ii, ie;
+	for (boost::tie(ii, ie) = boost::in_edges(v, *graph); ii != ie; ii++) {
+		TraceGraph_vertex_descriptor parent = boost::source(*ii, *graph);
+		recursively_remove_redundant_dynamic_dependencies(graph, dynamicDeps, search, parent);
+	}
+}
+
+#if 0
 // Function: find_maximal_configuration_for_call
 // Return: true if successful, else false
 // This function will find the maximum needed tiling for a given function
@@ -927,6 +1073,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 	//std::cerr << "999\n";
 	return false;
 }
+#endif
 
 
 // Function: initialize_basic_block_instance_count
@@ -1359,7 +1506,7 @@ bool AdvisorAnalysis::find_maximal_resource_requirement(Function *F, TraceGraphL
 	// keep track of timestamp
 	for (int timestamp = 0; timestamp < lastCycle; timestamp++) {
 		*outputLog << "Examine Cycle: " << timestamp << "\n";
-		std::cerr << "Examine Cycle: " << timestamp << "\n";
+		//std::cerr << "Examine Cycle: " << timestamp << "\n";
 		// activeBBs keeps track of the number of a particular 
 		// basic block resource that is needed to execute all
 		// the basic blocks within the anti-chain for each given
@@ -1501,6 +1648,134 @@ bool AdvisorAnalysis::latest_parent(TraceGraph_out_edge_iterator edge, TraceGrap
 
 
 // Function: find_optimal_configuration_for_all_calls
+// Performs the gradient descent method for function F to find the optimal
+// configuration of blocks on hardware vs. cpu
+// Description of gradient descent method:
+// With the gradient descent method we are trying to find the best configuration
+// of basic blocks to be implemented on fpga and cpu such that we can achieve the
+// best performance while satisfying the area constraints on an FPGA
+// There are two goals of the optimization:
+//	1) Fit the design on the hardware given some constraints
+//	2) Maximize the performance
+// We start from the maximal parallel configuration which implements the entire program
+// on the fpga (as long as they can be implemented on hardware).
+// If the design does not fit on the given resources, we find the basic block which
+// contributes the least performance/area and remove it (remove an instance/push it
+// onto cpu). We iterate this process until the design now "fits"
+// If the design fits on the fpga, we now again use the gradient descent method
+// to find blocks which contribute zero performance/area and remove them.
+void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
+	*outputLog << __func__ << "\n";
+	assert(executionGraph.find(F) != executionGraph.end());
+
+	// FIXME
+	// for now just hard code some area...
+	unsigned areaConstraint = 100;
+
+	bool done = false;
+
+	// we care about area and delay
+	unsigned area = UINT_MAX;
+	unsigned delay = UINT_MAX;
+
+	std::cerr << "Progress bar |";
+	while (!done) {
+		ConvergenceCounter++; // for stats
+		std::cerr << "="; // progress bar
+
+		// BOOKMARK -- infinite loop situation here...
+		area = get_area_requirement(F);
+		if (area > areaConstraint) {
+			*outputLog << "Area constraint violated. Reduce area.\n";
+			BasicBlock *removeBB;
+			int deltaDelay = INT_MAX;
+			incremental_gradient_descent(F, removeBB, deltaDelay);
+			decrement_basic_block_instance_count(removeBB);
+
+			// printout
+			*outputLog << "Current basic block configuration.\n";
+			print_basic_block_configuration(F);
+		} else {
+			*outputLog << "Area constraint satisfied, remove non performing blocks.\n";
+			BasicBlock *removeBB;
+			int deltaDelay = INT_MAX;
+			incremental_gradient_descent(F, removeBB, deltaDelay);
+			decrement_basic_block_instance_count(removeBB);
+
+			// printout
+			*outputLog << "Current basic block configuration.\n";
+			print_basic_block_configuration(F);
+
+			if (deltaDelay > 0) {
+				done = true;
+			}
+		}
+	}
+	std::cerr << ">"; // terminate progress bar
+}
+
+
+// Function: incremental_gradient_descent
+// Function will iterate through each basic block which has a hardware instance of more than 0
+// to determine the change in delay with the removal of that basic block and finds the basic block
+// whose contribution of delay/area is the least (closest to zero or negative)
+void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay) {
+	unsigned initialArea = get_area_requirement(F);
+	unsigned initialLatency = 0;
+	// need to loop through all calls to function to get total latency
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+		fIt != executionGraph[F].end(); fIt++) {
+		std::vector<TraceGraph_vertex_descriptor> roots;
+		roots.clear();
+		find_root_vertices(roots, fIt);
+		initialLatency += schedule_with_resource_constraints(roots, fIt, F);
+	}
+
+	// we set an initial min marginal performance as the average performance/area
+	float minMarginalPerformance = (float) initialLatency / (float) initialArea;
+
+	// try removing each basic block
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
+		if (decrement_basic_block_instance_count(BB)) {
+			*outputLog << "Performing removal of basic block " << BB->getName() << "\n";
+			// need to iterate through all calls made to function
+			unsigned latency = 0;
+			for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+				fIt != executionGraph[F].end(); fIt++) {
+				std::vector<TraceGraph_vertex_descriptor> roots;
+				roots.clear();
+				find_root_vertices(roots, fIt);
+
+				// need to update edge weights before scheduling in case any blocks
+				// become implemented on cpu
+				update_transition_delay(fIt);
+
+				latency += schedule_with_resource_constraints(roots, fIt, F);
+			}
+
+			*outputLog << "New latency: " << latency << "\n";
+
+			unsigned area = get_area_requirement(F);
+			*outputLog << "New area: " << area << "\n";
+
+			float deltaLatency = (float) (initialLatency - latency);
+			float deltaArea = (float) (initialArea - area);
+			float marginalPerformance = deltaLatency / deltaArea;
+			if (marginalPerformance < minMarginalPerformance) {
+				minMarginalPerformance = marginalPerformance;
+				removeBB = BB;
+				*outputLog << "New marginal performing block detected: " << BB->getName() << "\n";
+				deltaDelay = initialLatency - latency;
+			}
+
+			// restore the basic block count after removal
+			increment_basic_block_instance_count(BB);
+		} // else continue
+	}
+}
+
+#if 0
+// Function: find_optimal_configuration_for_all_calls
 // Performs the gradient descent method for function F until it
 // arrives at a local minima for area-delay product
 void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
@@ -1544,8 +1819,10 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 		done = true;
 	}
 }
+#endif
 
 
+#if 0
 // Function: incremental_gradient_descent
 // Performs one incremental step of gradient descent for function F
 // i.e. it will reduce the # of basic block instances for each basic block
@@ -1615,6 +1892,7 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 		return minAreaDelay;
 	}
 }
+#endif
 
 
 // Function: schedule_with_resource_constraints

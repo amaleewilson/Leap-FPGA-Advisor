@@ -82,6 +82,7 @@ class DependenceGraph : public FunctionPass {
 		}
 		static DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &DG);
 		static bool is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
+		static void get_all_basic_block_dependencies(DepGraph &DG, BasicBlock *BB, std::vector<BasicBlock *> &deps);
 	
 	private:
 		void add_vertices(Function &F);
@@ -170,12 +171,15 @@ typedef TraceGraph::out_edge_iterator TraceGraph_out_edge_iterator;
 typedef TraceGraph::in_edge_iterator TraceGraph_in_edge_iterator;
 typedef TraceGraph::edge_iterator TraceGraph_edge_iterator;
 
-//typedef std::map<Function *, std::list<std::list<BBSchedElem> > > ExecTrace;
-//typedef std::list<std::list<BBSchedElem> > FuncExecTrace;
-//typedef std::list<BBSchedElem> Trace;
-//typedef ExecTrace::iterator ExecTrace_iterator;
-//typedef FuncExecTrace::iterator FuncExecTrace_iterator;
-//typedef Trace::iterator Trace_iterator;
+// ExecutionOrder map definition
+typedef std::map<BasicBlock *, std::pair<int, std::vector<TraceGraph_vertex_descriptor> > > ExecutionOrder;
+typedef std::list<ExecutionOrder> ExecutionOrderList;
+typedef std::map<Function *, ExecutionOrderList> ExecutionOrderListMap;
+
+// iterators
+typedef ExecutionOrder::iterator ExecutionOrder_iterator;
+typedef ExecutionOrderList::iterator ExecutionOrderList_iterator;
+typedef ExecutionOrderListMap::iterator ExecutionOrderListMap_iterator;
 
 class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionScheduler> {
 	public:
@@ -514,7 +518,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 
 		// functions that do analysis on trace
 		bool find_maximal_configuration_for_all_calls(Function *F);
-		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
+		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
+		//bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
@@ -525,7 +530,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
 		void find_optimal_configuration_for_all_calls(Function *F);
-		int incremental_gradient_descent(Function *F, BasicBlock *&removeBB);
+		void incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay);
 		void set_basic_block_instance_count(BasicBlock *BB, int value);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
@@ -536,9 +541,12 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
+		void remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps);
+		void recursively_remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps, std::vector<TraceGraph_vertex_descriptor>::iterator search, TraceGraph_vertex_descriptor v);
 
 		void print_basic_block_configuration(Function *F);
 		void print_optimal_configuration_for_all_calls(Function *F);
+		void print_execution_order(ExecutionOrderList_iterator execOrder);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;
@@ -559,6 +567,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		//std::map<Function *, std::list<std::list<BBSchedElem> > > executionTrace;
 
 		ExecGraph executionGraph;
+
+		ExecutionOrderListMap executionOrderListMap;
 
 		//DepGraph depGraph;
 
