@@ -1700,18 +1700,22 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			BasicBlock *removeBB;
 			int deltaDelay = INT_MAX;
 			incremental_gradient_descent(F, removeBB, deltaDelay);
-			decrement_basic_block_instance_count(removeBB);
+
+			// only remove block if it doesn't negatively impact delay
+			if (deltaDelay >= 0) {
+				decrement_basic_block_instance_count(removeBB);
+			}
 
 			// printout
 			*outputLog << "Current basic block configuration.\n";
 			print_basic_block_configuration(F);
 
-			if (deltaDelay > 0) {
+			if (deltaDelay < 0) {
 				done = true;
 			}
 		}
 	}
-	std::cerr << ">"; // terminate progress bar
+	std::cerr << ">\n"; // terminate progress bar
 }
 
 
@@ -1732,7 +1736,8 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 	}
 
 	// we set an initial min marginal performance as the average performance/area
-	float minMarginalPerformance = (float) initialLatency / (float) initialArea;
+	//float minMarginalPerformance = (float) initialLatency / (float) initialArea;
+	float minMarginalPerformance = FLT_MAX;
 
 	// try removing each basic block
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
@@ -1760,7 +1765,9 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
 			float deltaLatency = (float) (initialLatency - latency);
 			float deltaArea = (float) (initialArea - area);
+			assert(deltaArea > 0);
 			float marginalPerformance = deltaLatency / deltaArea;
+			*outputLog << "marginal performance/area of block " << marginalPerformance << "\n";
 			if (marginalPerformance < minMarginalPerformance) {
 				minMarginalPerformance = marginalPerformance;
 				removeBB = BB;
@@ -2071,7 +2078,8 @@ void AdvisorAnalysis::initialize_resource_table(Function *F, std::map<BasicBlock
 // I'm sure this will need a lot of calibration...
 unsigned AdvisorAnalysis::get_area_requirement(Function *F) {
 	// baseline area required for cpu
-	int area = 1000;
+	//int area = 1000;
+	int area = 0;
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		int areaBB = FunctionAreaEstimator::get_basic_block_area(*AT, BB);
 		int repFactor = get_basic_block_instance_count(BB);
