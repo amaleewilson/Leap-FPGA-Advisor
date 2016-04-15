@@ -22,6 +22,7 @@
 #include "llvm/PassManager.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
@@ -64,17 +65,22 @@ typedef DepGraph::out_edge_iterator DepGraph_out_edge_iterator;
 typedef DepGraph::in_edge_iterator DepGraph_in_edge_iterator;
 typedef DepGraph::edge_iterator DepGraph_edge_iterator;
 
+//BOOKMARK change this to module pass...
 class DependenceGraph : public FunctionPass {
 
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.addPreserved<AliasAnalysis>();
 			AU.setPreservesAll();
 			AU.addRequired<DominatorTreeWrapperPass>();
-			AU.addRequired<MemoryDependenceAnalysis>();
+			AU.addRequiredTransitive<AliasAnalysis>();
+			//AU.addPreserved<MemoryDependenceAnalysis>();
+			AU.addRequiredTransitive<MemoryDependenceAnalysis>();
 		}
 		DependenceGraph() : FunctionPass(ID) {
 			//initializeDependenceGraph(*PassRegistry::getPassRegistry());
+			initializeBasicAliasAnalysisPass(*PassRegistry::getPassRegistry());
 		}
 		bool runOnFunction(Function &F);
 		DepGraph &getDepGraph() {
@@ -186,6 +192,9 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 		static char ID;
 		FunctionScheduler() : FunctionPass(ID) {}
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.addPreserved<AliasAnalysis>();
+			AU.addPreserved<MemoryDependenceAnalysis>();
+			AU.addPreserved<DependenceGraph>();
 			AU.setPreservesAll();
 		}
 		bool runOnFunction(Function &F) {
@@ -232,6 +241,9 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 		static char ID;
 		FunctionAreaEstimator() : FunctionPass(ID) {}
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.addPreserved<AliasAnalysis>();
+			AU.addPreserved<MemoryDependenceAnalysis>();
+			AU.addPreserved<DependenceGraph>();
 			AU.setPreservesAll();
 		}
 		bool runOnFunction(Function &F) {
@@ -478,11 +490,12 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
+			AU.addPreserved<AliasAnalysis>();
 			AU.setPreservesAll();
 			AU.addRequired<CallGraphWrapperPass>();
 			AU.addRequired<LoopInfo>();
 			AU.addRequired<DominatorTreeWrapperPass>();
-			AU.addRequired<MemoryDependenceAnalysis>();
+			AU.addPreserved<DependenceGraph>();
 			AU.addRequired<DependenceGraph>();
 			AU.addRequired<FunctionScheduler>();
 			AU.addRequired<FunctionAreaEstimator>();

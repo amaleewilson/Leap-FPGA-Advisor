@@ -1715,7 +1715,24 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			}
 		}
 	}
+
 	std::cerr << ">\n"; // terminate progress bar
+
+	// print out final scheduling results and area
+	unsigned finalLatency = 0;
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+		fIt != executionGraph[F].end(); fIt++) {
+		std::vector<TraceGraph_vertex_descriptor> roots;
+		roots.clear();
+		find_root_vertices(roots, fIt);
+		finalLatency += schedule_with_resource_constraints(roots, fIt, F);
+	}
+	
+	unsigned finalArea = get_area_requirement(F);
+
+	std::cerr << "Final Latency: " << finalLatency << "\n";
+	std::cerr << "Final Area: " << finalArea << "\n";
+
 }
 
 
