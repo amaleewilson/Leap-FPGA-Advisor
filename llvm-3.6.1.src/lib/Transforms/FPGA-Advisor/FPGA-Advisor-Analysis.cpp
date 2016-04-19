@@ -1742,6 +1742,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 // whose contribution of delay/area is the least (closest to zero or negative)
 void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay) {
 	unsigned initialArea = get_area_requirement(F);
+	*outputLog << "Initial area: " << initialArea << "\n";
 	unsigned initialLatency = 0;
 	// need to loop through all calls to function to get total latency
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
@@ -1782,8 +1783,15 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
 			float deltaLatency = (float) (initialLatency - latency);
 			float deltaArea = (float) (initialArea - area);
-			assert(deltaArea > 0);
-			float marginalPerformance = deltaLatency / deltaArea;
+			float marginalPerformance;
+			if (deltaArea == 0) {
+				// this block contributes no area
+				// never remove a block that contributes no area?? No harm.
+				marginalPerformance = FLT_MAX;
+			} else {
+				marginalPerformance = deltaLatency / deltaArea;
+			}
+			assert(deltaArea >= 0);
 			*outputLog << "marginal performance/area of block " << marginalPerformance << "\n";
 			if (marginalPerformance < minMarginalPerformance) {
 				minMarginalPerformance = marginalPerformance;
