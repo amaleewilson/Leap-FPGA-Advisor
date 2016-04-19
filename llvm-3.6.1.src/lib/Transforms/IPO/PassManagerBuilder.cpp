@@ -29,6 +29,8 @@
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Vectorize.h"
 
+#include <iostream>
+
 using namespace llvm;
 
 static cl::opt<bool>
@@ -77,6 +79,10 @@ static cl::opt<bool> UseCFLAA("use-cfl-aa",
 static cl::opt<bool>
 EnableMLSM("mlsm", cl::init(true), cl::Hidden,
            cl::desc("Enable motion of merged load and store"));
+
+static cl::opt<bool>
+CustomAA("custom-aa", cl::init(false), cl::Hidden,
+			cl::desc("Enable specific alias analysis"));
 
 PassManagerBuilder::PassManagerBuilder() {
     OptLevel = 2;
@@ -129,6 +135,12 @@ void PassManagerBuilder::addExtensionsToPM(ExtensionPointTy ETy,
 
 void
 PassManagerBuilder::addInitialAliasAnalysisPasses(PassManagerBase &PM) const {
+  if (CustomAA) {
+  	std::cerr << "### Use Type Based Alias Analysis Only ###\n";
+  	PM.add(createTypeBasedAliasAnalysisPass());
+	return;
+  }
+
   // Add TypeBasedAliasAnalysis before BasicAliasAnalysis so that
   // BasicAliasAnalysis wins if they disagree. This is intended to help
   // support "obvious" type-punning idioms.
@@ -178,6 +190,7 @@ void PassManagerBuilder::populateModulePassManager(PassManagerBase &MPM) {
       MPM.add(createBarrierNoopPass());
 
     addExtensionsToPM(EP_EnabledOnOptLevel0, MPM);
+
     return;
   }
 
