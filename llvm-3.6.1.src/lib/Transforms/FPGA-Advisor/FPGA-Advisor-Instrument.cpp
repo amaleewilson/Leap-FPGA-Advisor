@@ -169,7 +169,7 @@ void AdvisorInstr::instrument_load(LoadInst *LI) {
 	*outputLog << "\n";
 
 	// get the arguments for address
-	const Value *pointer = LI->getPointerOperand();
+	Value *pointer = LI->getPointerOperand();
 	*outputLog << "the pointer operand ";
 	pointer->print(*outputLog);
 	*outputLog << "\n";
@@ -187,13 +187,14 @@ void AdvisorInstr::instrument_load(LoadInst *LI) {
 
 	// print right after the load
 	IRBuilder<> builder(LI);
-	StringRef loadAddrMsgString = StringRef("Load from address: %p\nSize in bytes: " + sizeString + "\n");
+	StringRef loadAddrMsgString = StringRef("Load from address: %p size in bytes: " + sizeString + "\n");
 	Value *loadAddrMsg = builder.CreateGlobalStringPtr(loadAddrMsgString, "load_addr_msg_string");
 	printfArgs.push_back(loadAddrMsg);
 
-	std::string pointerString = get_value_as_string(pointer);
-	Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
-	printfArgs.push_back(addrMsg);
+	//std::string pointerString = get_value_as_string(pointer);
+	//Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
+	//printfArgs.push_back(addrMsg);
+	printfArgs.push_back(pointer);
 
 	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 }
@@ -207,7 +208,7 @@ void AdvisorInstr::instrument_store(StoreInst *SI) {
 	*outputLog << "\n";
 
 	// get the arguments for address
-	const Value *pointer = SI->getPointerOperand();
+	Value *pointer = SI->getPointerOperand();
 	*outputLog << "the pointer operand ";
 	pointer->print(*outputLog);
 	*outputLog << "\n";
@@ -225,13 +226,15 @@ void AdvisorInstr::instrument_store(StoreInst *SI) {
 
 	// print right after the store
 	IRBuilder<> builder(SI);
-	StringRef storeAddrMsgString = StringRef("Store at address: %p\nSize in bytes: " + sizeString + "\n");
+	StringRef storeAddrMsgString = StringRef("Store at address: %p size in bytes: " + sizeString + "\n");
 	Value *storeAddrMsg = builder.CreateGlobalStringPtr(storeAddrMsgString, "store_addr_msg_string");
 	printfArgs.push_back(storeAddrMsg);
 
-	std::string pointerString = get_value_as_string(pointer);
-	Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
-	printfArgs.push_back(addrMsg);
+	//std::string pointerString = get_value_as_string(pointer);
+	//*outputLog << "Store pointer as string: " << pointerString << "\n";
+	//Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
+	//printfArgs.push_back(addrMsg);
+	printfArgs.push_back(pointer);
 
 	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 }
@@ -267,6 +270,7 @@ uint64_t AdvisorInstr::get_load_size_in_bytes(LoadInst *LI) {
 
 
 // just copied LLVMPrintValueToString from Core.cpp
+/*
 std::string AdvisorInstr::get_value_as_string(const Value *value) {
 	std::string buf;
 	raw_string_ostream os(buf);
@@ -280,7 +284,7 @@ std::string AdvisorInstr::get_value_as_string(const Value *value) {
 
 	return buf;
 }
-
+*/
 
 
 

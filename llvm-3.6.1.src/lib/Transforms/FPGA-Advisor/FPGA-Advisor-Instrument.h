@@ -70,7 +70,7 @@ class AdvisorInstr : public ModulePass {
 		void instrument_load(LoadInst *LI);
 		uint64_t get_store_size_in_bytes(StoreInst *SI);
 		uint64_t get_load_size_in_bytes(LoadInst *LI);
-		std::string get_value_as_string(const Value *value);
+		//std::string get_value_as_string(const Value *value);
 		Module *mod;
 		raw_ostream *outputLog;
 
