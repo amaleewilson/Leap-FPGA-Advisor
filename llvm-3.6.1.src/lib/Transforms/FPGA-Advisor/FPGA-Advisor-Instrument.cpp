@@ -1,9 +1,33 @@
 //===- Instrument.cpp ---------------------------------------------------===//
 //
-//                     The LLVM Compiler Infrastructure
+// Copyright (c) 2016, Intel Corporation
+// All rights reserved.
 //
-// This file is distributed under the University of Illinois Open Source
-// License. See LICENSE.TXT for details.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+//
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+//
+// Neither the name of the Intel Corporation nor the names of its contributors
+// may be used to endorse or promote products derived from this software
+// without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
 //
 //===----------------------------------------------------------------------===//
 //
@@ -56,7 +80,7 @@ void AdvisorInstr::instrument_function(Function *F) {
 	// will be printed before the basicblock due to the way the instructions
 	// are inserted (at first insertion point in basic block)
 	for (auto BB = F->begin(), BE = F->end(); BB != BE; BB++) {
-		instrument_basicblock(BB);
+		instrument_basic_block(BB);
 	}
 
 	*outputLog << "Inserting printf call for function: " << F->getName() << "\n";
@@ -83,14 +107,14 @@ void AdvisorInstr::instrument_function(Function *F) {
 	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 }
 
-// Function: instrument_basicblock
+// Function: instrument_basic_block
 // Instruments each basicblock to print the name of the basicblock when it is encountered
 // as well as the function to which it belongs:
 // e.g.) BasicBlock: %1 Function: func
 // Whenever a return instruction is encountered, the function should print a message
 // stating that it is returning from function
 // e.g.) Returning from: func
-void AdvisorInstr::instrument_basicblock(BasicBlock *BB) {
+void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	*outputLog << "Inserting printf call for basic block: " << BB->getName() << "\n";
 
 	// insert call to printf at first insertion point
@@ -127,4 +151,148 @@ void AdvisorInstr::instrument_basicblock(BasicBlock *BB) {
 		builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 		printfArgs.clear();
 	}
+
+	// now insert calls to printf for memory related instructions
+	for (auto I = BB->begin(); I != BB->end(); I++) {
+		if (isa<StoreInst>(I)) {
+			instrument_store(dyn_cast<StoreInst>(I));
+		} else if (isa<LoadInst>(I)) {
+			instrument_load(dyn_cast<LoadInst>(I));
+		}
+	}
 }
+
+// Function: instrument_load
+void AdvisorInstr::instrument_load(LoadInst *LI) {
+	*outputLog << "Inserting printf call for load instruction: ";
+	LI->print(*outputLog);
+	*outputLog << "\n";
+
+	// get the arguments for address
+	const Value *pointer = LI->getPointerOperand();
+	*outputLog << "the pointer operand ";
+	pointer->print(*outputLog);
+	*outputLog << "\n";
+
+	// get the argument for read size
+	std::string sizeString = std::to_string(get_load_size_in_bytes(LI));
+	*outputLog << "the memory access size " << sizeString << "\n";
+
+	// print function
+	FunctionType *printf_type = TypeBuilder<int(char *, ...), false>::get(getGlobalContext());
+	Function *printfFunc = cast<Function>(mod->getOrInsertFunction("printf", printf_type,
+						AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	assert(printfFunc);
+	std::vector<Value *> printfArgs;
+
+	// print right after the load
+	IRBuilder<> builder(LI);
+	StringRef loadAddrMsgString = StringRef("Load from address: %p\nSize in bytes: " + sizeString + "\n");
+	Value *loadAddrMsg = builder.CreateGlobalStringPtr(loadAddrMsgString, "load_addr_msg_string");
+	printfArgs.push_back(loadAddrMsg);
+
+	std::string pointerString = get_value_as_string(pointer);
+	Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
+	printfArgs.push_back(addrMsg);
+
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+}
+
+
+// Function: instrument_store
+// Instruments each store instruction to print the starting address and the number of bytes it accesses
+void AdvisorInstr::instrument_store(StoreInst *SI) {
+	*outputLog << "Inserting printf call for store instruction: ";
+	SI->print(*outputLog);
+	*outputLog << "\n";
+
+	// get the arguments for address
+	const Value *pointer = SI->getPointerOperand();
+	*outputLog << "the pointer operand ";
+	pointer->print(*outputLog);
+	*outputLog << "\n";
+
+	// get the argument for address size
+	std::string sizeString = std::to_string(get_store_size_in_bytes(SI));
+	*outputLog << "the memory access size " << sizeString << "\n";
+
+	// print function
+	FunctionType *printf_type = TypeBuilder<int(char *, ...), false>::get(getGlobalContext());
+	Function *printfFunc = cast<Function>(mod->getOrInsertFunction("printf", printf_type,
+						AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	assert(printfFunc);
+	std::vector<Value *> printfArgs;
+
+	// print right after the store
+	IRBuilder<> builder(SI);
+	StringRef storeAddrMsgString = StringRef("Store at address: %p\nSize in bytes: " + sizeString + "\n");
+	Value *storeAddrMsg = builder.CreateGlobalStringPtr(storeAddrMsgString, "store_addr_msg_string");
+	printfArgs.push_back(storeAddrMsg);
+
+	std::string pointerString = get_value_as_string(pointer);
+	Value *addrMsg = builder.CreateGlobalStringPtr(pointerString, "addr_msg_string");
+	printfArgs.push_back(addrMsg);
+
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+}
+
+
+// get the size of the store
+uint64_t AdvisorInstr::get_store_size_in_bytes(StoreInst *SI) {
+	// ...
+	const DataLayout *DL = SI->getParent()->getParent()->getParent()->getDataLayout();
+	uint64_t numBytes = DL->getTypeStoreSize(SI->getValueOperand()->getType());
+
+	*outputLog << "Store width in bytes: " << numBytes << "\n";
+
+	return numBytes;
+}
+
+
+// get the size of the load
+uint64_t AdvisorInstr::get_load_size_in_bytes(LoadInst *LI) {
+	const DataLayout *DL = LI->getParent()->getParent()->getParent()->getDataLayout();
+	Type *pointerType = LI->getPointerOperand()->getType();
+	// this must be a pointer type... right?
+	assert(pointerType->isPointerTy());
+
+	// ... should the argument always be 0?? TODO FIXME
+	uint64_t numBytes = DL->getTypeSizeInBits(pointerType->getContainedType(0));
+	numBytes >>= 3;
+
+	*outputLog << "Load width in bytes: " << numBytes << "\n";
+
+	return numBytes;
+}
+
+
+// just copied LLVMPrintValueToString from Core.cpp
+std::string AdvisorInstr::get_value_as_string(const Value *value) {
+	std::string buf;
+	raw_string_ostream os(buf);
+
+	if (value)
+		value->print(os);
+	else
+		*outputLog << "Value to print is null\n";
+	
+	os.flush();
+
+	return buf;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
