@@ -1010,6 +1010,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		
 		// add dependency edges to graph
 		for (auto it = dynamicDeps.begin(); it != dynamicDeps.end(); it++) {
+			if (!dynamic_memory_dependence_exists(self, *it, graph) && 
+				!DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[*it].basicblock, *depGraph)) {
+				// don't add edge to node for which there are no true dependences
+				// nor any dynamic memory dependences
+				continue;
+			}
 			boost::add_edge(*it, self, *graph);
 		}
 
@@ -1018,6 +1024,72 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		assert(search != (*execOrder).end());
 		search->second.first++;
 	}
+}
+
+
+/*
+bool AdvisorAnalysis::true_dependence_exists(BasicBlock *BB1, BasicBlock *BB2) {
+	// find corresponding edge in depGraph
+	return DependenceGraph::is_basic_block_dependence_true(BB1, BB2, depGraph);
+}
+*/
+
+bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descriptor child, 
+							TraceGraph_vertex_descriptor parent, TraceGraphList_iterator graph) {
+	// examine each memory tuple between the two vertices
+	// [1] compare parent store with child load RAW
+
+	// [2] compare parent load with child store WAR
+
+	// [3] compare parent store with child store WAW
+
+	std::vector<std::pair<uint64_t, uint64_t> > &pWrite = (*graph)[parent].memoryWriteTuples;
+	std::vector<std::pair<uint64_t, uint64_t> > &cWrite = (*graph)[child].memoryWriteTuples;
+	std::vector<std::pair<uint64_t, uint64_t> > &pRead = (*graph)[parent].memoryReadTuples;
+	std::vector<std::pair<uint64_t, uint64_t> > &cRead = (*graph)[child].memoryReadTuples;
+	for (auto pwit = pWrite.begin(); pwit != pWrite.end(); pwit++) {
+		for (auto cwit = cWrite.begin(); cwit != cWrite.end(); cwit++) {
+			// [3]
+			if (memory_accesses_conflict(*cwit, *pwit)) {
+				return true;
+			}
+		}
+		for (auto crit = cRead.begin(); crit != cRead.end(); crit++) {
+			// [1]
+			if (memory_accesses_conflict(*crit, *pwit)) {
+				return true;
+			}
+		}
+	}
+
+	for (auto prit = pRead.begin(); prit != pRead.end(); prit++) {
+		for (auto cwit = cWrite.begin(); cwit != cWrite.end(); cwit++) {
+			// [2]
+			if (memory_accesses_conflict(*cwit, *prit)) {
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+
+bool AdvisorAnalysis::memory_accesses_conflict(std::pair<uint64_t, uint64_t> &access1, std::pair<uint64_t, uint64_t> &access2) {
+	assert(access1.second > 0 && access2.second > 0);
+	if (access1.first > access2.first) {
+		if (access1.first < (access2.first + access2.second)) {
+			return true;
+		}
+	} else if (access1.first < access2.first) {
+		if (access2.first < (access1.first + access1.second)) {
+			return true;
+		}
+	} else {
+		return true;
+	}
+
+	return false;
 }
 
 void AdvisorAnalysis::print_execution_order(ExecutionOrderList_iterator execOrder) {
@@ -1789,7 +1861,6 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 		ConvergenceCounter++; // for stats
 		std::cerr << "="; // progress bar
 
-		// BOOKMARK -- infinite loop situation here...
 		area = get_area_requirement(F);
 		if (area > areaConstraint) {
 			*outputLog << "Area constraint violated. Reduce area.\n";

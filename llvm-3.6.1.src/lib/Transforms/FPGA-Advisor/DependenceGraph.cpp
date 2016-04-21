@@ -133,7 +133,7 @@ void DependenceGraph::add_edges() {
 	DepGraph_iterator vi, ve;
 	for (boost::tie(vi, ve) = vertices(DG); vi != ve; vi++) {
 		BasicBlock *currBB = DG[*vi];
-		std::vector<BasicBlock *> depBBs;
+		std::vector<std::pair<BasicBlock *, bool> > depBBs;
 		*outputLog << "******************************************************************************************************\n";
 		*outputLog << "Examining dependencies for basic block: " << currBB->getName() << "\n";
 		// analyze each instruction within the basic block
@@ -150,6 +150,7 @@ void DependenceGraph::add_edges() {
 			*outputLog << "\tfrom basic block " << currBB->getName() << "\n";
 
 			// operands
+			// true dependence
 			User *user = dyn_cast<User>(I);
 			for (auto op = user->op_begin(); op != user->op_end(); op++) {
 				if (Instruction *dep = dyn_cast<Instruction>(op->get())) {
@@ -160,7 +161,7 @@ void DependenceGraph::add_edges() {
 					*outputLog << "True dependence on instruction: ";
 					dep->print(*outputLog);
 					*outputLog << "\tfrom basic block: " << depBB->getName() << "\n";
-					insert_dependent_basic_block(depBBs, depBB);
+					insert_dependent_basic_block(depBBs, depBB, true);
 				}
 			}
 
@@ -174,7 +175,7 @@ void DependenceGraph::add_edges() {
 				if (unsupported_memory_instruction(I)) {
 					// do something
 					*outputLog << "Not a supported memory instruction but may read or write memory. Adding dependence to all basic blocks.\n";
-					insert_dependent_basic_block_all_memory(depBBs);
+					insert_dependent_basic_block_all_memory(depBBs, false);
 					continue;
 				}
 
@@ -200,11 +201,11 @@ void DependenceGraph::add_edges() {
 						Instruction *dep = nonLocalMDR.getInst();
 						if (nonLocalMDR.isUnknown() || dep == NULL) {
 							*outputLog << "Unknown/Other type dependence!!! Adding dependence to all basic blocks.\n";
-							insert_dependent_basic_block_all_memory(depBBs);
+							insert_dependent_basic_block_all_memory(depBBs, false);
 							break;
 						}
 						BasicBlock *depBB = dep->getParent();
-						insert_dependent_basic_block(depBBs, depBB);
+						insert_dependent_basic_block(depBBs, depBB, false);
 
 						*outputLog << "Memory instruction dependent on: ";
 						dep->print(*outputLog);
@@ -213,7 +214,7 @@ void DependenceGraph::add_edges() {
 				} else if (MDR.isUnknown()) {
 					// we will have to mark every basic block (including self) as dependent
 					*outputLog << "Unknown dependence!!! Adding dependence to all basic blocks.\n";
-					insert_dependent_basic_block_all_memory(depBBs);
+					insert_dependent_basic_block_all_memory(depBBs, false);
 				} else {
 					*outputLog << "> Local dependence.\n";
 					Instruction *dep = MDR.getInst();
@@ -222,17 +223,24 @@ void DependenceGraph::add_edges() {
 					*outputLog << "Memory instruction dependent on: ";
 					dep->print(*outputLog);
 					*outputLog << "\tfrom basic block: " << depBB->getName() << "\n";
-					insert_dependent_basic_block(depBBs, depBB);
+					insert_dependent_basic_block(depBBs, depBB, false);
 				}
 			}
 		}
 
 		// add all the dependent edges
 		for (auto di = depBBs.begin(); di != depBBs.end(); di++) {
-			BasicBlock *depBB = *di;
+			BasicBlock *depBB = di->first;
 			DepGraph_descriptor depVertex = get_vertex_descriptor_for_basic_block(depBB, DG);
 			DepGraph_descriptor currVertex = get_vertex_descriptor_for_basic_block(currBB, DG);
-			boost::add_edge(currVertex, depVertex, DG);
+			bool trueDep = di->second;
+			//std::pair<DepGraph_edge_descriptor, bool> p = boost::add_edge(currVertex, depVertex, DG);
+			//boost::put(true_dependence_t(), DG, p.first, trueDep);
+			if (trueDep) {
+				boost::add_edge(currVertex, depVertex, true, DG);
+			} else {
+				boost::add_edge(currVertex, depVertex, false, DG);
+			}
 		}
 	}
 }
@@ -250,23 +258,29 @@ DepGraph_descriptor DependenceGraph::get_vertex_descriptor_for_basic_block(Basic
 	assert(0);
 }
 
-void DependenceGraph::insert_dependent_basic_block(std::vector<BasicBlock *> &list, BasicBlock *BB) {
-	if (std::find(list.begin(), list.end(), BB) == list.end()) {
-		list.push_back(BB);
+void DependenceGraph::insert_dependent_basic_block(std::vector<std::pair<BasicBlock *, bool> > &list, BasicBlock *BB, bool trueDep) {
+	for (auto search = list.begin(); search != list.end(); search++) {
+		if (search->first == BB) {
+			// exists, update trueDep to true if true
+			search->second |= trueDep;
+			return;
+		}
 	}
+
+	list.push_back(std::make_pair(BB, trueDep));
 }
 
-void DependenceGraph::insert_dependent_basic_block_all(std::vector<BasicBlock *> &list) {
+void DependenceGraph::insert_dependent_basic_block_all(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep) {
 	for (auto BB = func->begin(); BB != func->end(); BB++) {
-		insert_dependent_basic_block(list, BB);
+		insert_dependent_basic_block(list, BB, trueDep);
 	}
 }
 
 // Function insert_dependent_basic_block_all_memory
 // adds all basic blocks with memory instructions into dependency list
-void DependenceGraph::insert_dependent_basic_block_all_memory(std::vector<BasicBlock *> &list) {
+void DependenceGraph::insert_dependent_basic_block_all_memory(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep) {
 	for (auto BB = MemoryBBs.begin(); BB != MemoryBBs.end(); BB++) {
-		insert_dependent_basic_block(list, *BB);
+		insert_dependent_basic_block(list, *BB, trueDep);
 	}
 }
 
@@ -297,6 +311,44 @@ bool DependenceGraph::is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2,
 		}
 	}
 	return false;
+}
+
+
+// Function: is_basic_block_dependence_true
+// Return: true if there is a true dependence flowing from BB2 to BB1
+// i.e. BB1 is dependent on BB2
+bool DependenceGraph::is_basic_block_dependence_true(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG) {
+	DepGraph_descriptor bb1 = get_vertex_descriptor_for_basic_block(BB1, DG);
+	DepGraph_descriptor bb2 = get_vertex_descriptor_for_basic_block(BB2, DG);
+
+	/*
+	DepGraph_out_edge_iterator oi, oe;
+	for (boost::tie(oi, oe) = boost::out_edge(bb1, DG); oi != oe; oi++) {
+		if (bb2 == boost::target(*oi, DG) && ) {
+		}
+
+	}
+	return false;
+	*/
+
+	// get the edge
+	//bool found;
+	//DepGraph_edge_descriptor e;
+	//boost::tie(e, found) 
+	std::pair<DepGraph_edge_descriptor, bool> ep = boost::edge(bb1, bb2, DG);
+
+	if (ep.second) {
+		// check edge bool
+		bool trueDep;
+		//trueDep = boost::get(true_dependence_t(), DG, ep.first);
+		//boost::property_map<DepGraph, true_dependence_t>::type trueDepMap = boost::get(true_dependence_t(), DG);
+		//bool trueDep = trueDepMap[ep.first];
+		bool t = boost::get(true_dependence_t(), DG, ep.first);
+		trueDep = t;
+
+		return trueDep;
+	}
+	return false; // such edge does not exist
 }
 
 

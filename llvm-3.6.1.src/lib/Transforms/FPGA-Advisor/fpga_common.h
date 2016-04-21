@@ -81,13 +81,23 @@ namespace fpga {
 // STL list container for OutEdge list
 // STL vector container for vertices
 // Use directed edges
-typedef boost::adjacency_list< boost::listS, boost::vecS, boost::bidirectionalS, BasicBlock * >
+// the boolean is an edge property which is true when the dependence edge exists due to a true dependence
+// it may also have memory dependences
+//typedef boost::property <edge_custom_t, bool> TrueDependence;
+struct true_dependence_t {
+	typedef boost::edge_property_tag kind;
+};
+
+typedef boost::property<true_dependence_t, bool> TrueDependence;
+//typedef boost::property<boost::edge_index_t, bool> TrueDependence;
+typedef boost::adjacency_list< boost::listS, boost::vecS, boost::bidirectionalS, BasicBlock *, TrueDependence>
 		DepGraph;
 typedef DepGraph::vertex_iterator DepGraph_iterator;
 typedef DepGraph::vertex_descriptor DepGraph_descriptor;
 typedef DepGraph::out_edge_iterator DepGraph_out_edge_iterator;
 typedef DepGraph::in_edge_iterator DepGraph_in_edge_iterator;
 typedef DepGraph::edge_iterator DepGraph_edge_iterator;
+typedef DepGraph::edge_descriptor DepGraph_edge_descriptor;
 
 //BOOKMARK change this to module pass...
 class DependenceGraph : public FunctionPass {
@@ -113,13 +123,14 @@ class DependenceGraph : public FunctionPass {
 		static DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &DG);
 		static bool is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
 		static void get_all_basic_block_dependencies(DepGraph &DG, BasicBlock *BB, std::vector<BasicBlock *> &deps);
+		static bool is_basic_block_dependence_true(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
 	
 	private:
 		void add_vertices(Function &F);
 		void add_edges();
-		void insert_dependent_basic_block(std::vector<BasicBlock *> &list, BasicBlock *BB);
-		void insert_dependent_basic_block_all(std::vector<BasicBlock *> &list);
-		void insert_dependent_basic_block_all_memory(std::vector<BasicBlock *> &list);
+		void insert_dependent_basic_block(std::vector<std::pair<BasicBlock *, bool> > &list, BasicBlock *BB, bool trueDep);
+		void insert_dependent_basic_block_all(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep);
+		void insert_dependent_basic_block_all_memory(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep);
 		bool unsupported_memory_instruction(Instruction *I);
 
 		Function *func;
@@ -584,6 +595,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
 		void remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps);
 		void recursively_remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps, std::vector<TraceGraph_vertex_descriptor>::iterator search, TraceGraph_vertex_descriptor v);
+
+		bool dynamic_memory_dependence_exists(TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraphList_iterator graph);
+		bool memory_accesses_conflict(std::pair<uint64_t, uint64_t> &access1, std::pair<uint64_t, uint64_t> &access2);
 
 		void print_basic_block_configuration(Function *F);
 		void print_optimal_configuration_for_all_calls(Function *F);
