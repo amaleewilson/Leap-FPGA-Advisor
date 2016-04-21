@@ -169,6 +169,10 @@ typedef struct {
 		int mutable cycStart;
 		int mutable cycEnd;
 		std::string name;
+		// a memory access tuple for each store/load
+		// first field stores the starting address, second field stores the width of access in bytes
+		std::vector<std::pair<uint64_t, uint64_t> > memoryWriteTuples;
+		std::vector<std::pair<uint64_t, uint64_t> > memoryReadTuples;
 } BBSchedElem;
 
 // TraceGraph edge weight property representing transition delay

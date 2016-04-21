@@ -562,6 +562,9 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	int ID = 0;
 
 	//TraceGraph::vertex_descriptor prevVertex = 0;
+	TraceGraph::vertex_descriptor latestVertex;
+	//TraceGraphList_iterator latestGraph;
+	Function *latestFunction = NULL;
 
 	while (std::getline(fin, line)) {
 		// There are 3 types of messages:
@@ -587,6 +590,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			//=----------------------------=//
 
 			Function *F = find_function_by_name(funcString);
+			latestFunction = F;
 			if (!F) {
 				// could not find the function by name
 				errs() << "Could not find the function from trace in program!\n";
@@ -597,10 +601,14 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			ExecGraph_iterator fGraph = executionGraph.find(F);
 			ExecutionOrderListMap_iterator fOrder = executionOrderListMap.find(F);
 			if (fGraph == executionGraph.end() && fOrder == executionOrderListMap.end()) {
+				// function does not exist as entry in execGraph
 				TraceGraphList emptyList;
 				executionGraph.insert(std::make_pair(F, emptyList));
 				TraceGraph newGraph;
 				executionGraph[F].push_back(newGraph);
+				
+				// set latest seen graph
+				//latestGraph = (executionGraph[F].end()) - 1;
 
 				ExecutionOrderList emptyOrderList;
 				executionOrderListMap.insert(std::make_pair(F, emptyOrderList));
@@ -611,6 +619,9 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				// function exists
 				TraceGraph newGraph;
 				fGraph->second.push_back(newGraph);
+
+				// set latest seen graph
+				//latestGraph = (fGraph->second.end()) - 1;
 
 				ExecutionOrder newOrder;
 				newOrder.clear();
@@ -680,6 +691,8 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].minCycStart = -1;
 			currGraph[currVertex].minCycEnd = -1;
 			currGraph[currVertex].name = BB->getName().str();
+			currGraph[currVertex].memoryWriteTuples.clear();
+			currGraph[currVertex].memoryReadTuples.clear();
 			/*
 			if (currVertex != prevVertex) {
 				// A -> B means that A depends on the completion of B
@@ -709,6 +722,75 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 			// increment the node ID
 			ID++;
+
+			// set the latest added vertex
+			latestVertex = currVertex;
+
+		} else if (std::regex_match(line, std::regex("(Store at address: )(.*)( size in bytes: )(.*)") )) {
+			const char *delimiter = " ";
+
+			// make a non-const copy of line
+			std::vector<char> lineCopy(line.begin(), line.end());
+			lineCopy.push_back(0);
+
+			//=---------------------------------=//
+			// Store<space>at<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
+			// separate out string by tokens
+			char *pch = std::strtok(&lineCopy[18], delimiter);
+			std::string addrString(pch);
+
+			pch = strtok(NULL, delimiter);
+			// size
+			pch = strtok(NULL, delimiter);
+			// in
+			pch = strtok(NULL, delimiter);
+			// bytes:
+			pch = strtok(NULL, delimiter);
+			std::string bytesString(pch);
+			//=---------------------------------=//
+
+			// convert the string to uint64_t
+			uint64_t addrStart = std::strtoul(addrString.c_str(), NULL, 0);
+			uint64_t width = std::strtoul(bytesString.c_str(), NULL, 0);
+			*outputLog << "Discovered a store with starting address : " << addrStart << "\n";
+			*outputLog << "Store width in bytes : " << width << "\n";
+
+			TraceGraph &latestGraph = executionGraph[latestFunction].back();
+			latestGraph[latestVertex].memoryWriteTuples.push_back(std::make_pair(addrStart, width));
+
+
+		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
+			const char *delimiter = " ";
+
+			// make a non-const copy of line
+			std::vector<char> lineCopy(line.begin(), line.end());
+			lineCopy.push_back(0);
+
+			//=---------------------------------=//
+			// Load<space>from<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
+			// separate out string by tokens
+			char *pch = std::strtok(&lineCopy[19], delimiter);
+			std::string addrString(pch);
+
+			pch = strtok(NULL, delimiter);
+			// size
+			pch = strtok(NULL, delimiter);
+			// in
+			pch = strtok(NULL, delimiter);
+			// bytes:
+			pch = strtok(NULL, delimiter);
+			std::string byteString(pch);
+			//=---------------------------------=//
+
+			// convert the string to uint64_t
+			uint64_t addrStart = std::strtoul(addrString.c_str(), NULL, 0);
+			uint64_t width = std::strtoul(byteString.c_str(), NULL, 0);
+			*outputLog << "Discovered a load with starting address : " << addrStart << "\n";
+			*outputLog << "Load width in bytes : " << width << "\n";
+
+			TraceGraph &latestGraph = executionGraph[latestFunction].back();
+			latestGraph[latestVertex].memoryReadTuples.push_back(std::make_pair(addrStart, width));
+			
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			// nothing to do really...
 		} else {
