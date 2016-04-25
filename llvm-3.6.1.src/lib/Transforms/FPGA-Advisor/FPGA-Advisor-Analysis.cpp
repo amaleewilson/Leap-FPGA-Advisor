@@ -111,6 +111,9 @@ static cl::opt<bool> HideGraph("hide-graph", cl::desc("If enabled, disables prin
 		cl::Hidden, cl::init(false));
 static cl::opt<bool> NoMessage("no-message", cl::desc("If enabled, disables printing of messages for debug"),
 		cl::Hidden, cl::init(false));
+static cl::opt<bool> StaticDepsOnly("static-deps-only", 
+		cl::desc("If enabled, program is analyzed only with dependence information that is statically avaiable"), 
+		cl::Hidden, cl::init(false));
 
 //===----------------------------------------------------------------------===//
 // List of statistics -- not necessarily the statistics listed above,
@@ -193,11 +196,11 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	}
 
 	//=------------------------------------------------------=//
-	// [5] Printout statistics
+	// [5] Printout statistics [turned off, this isn't even useful]
 	//=------------------------------------------------------=//
 	//*outputLog << "Print static information\n"; // there is no need to announce this..
 	// pre-instrumentation statistics => work with uninstrumented code
-	print_statistics();
+	//print_statistics();
 
 	end = clock();
 	float timeElapsed(((float) end - (float) start) / CLOCKS_PER_SEC);
@@ -225,7 +228,8 @@ void AdvisorAnalysis::visitFunction(Function &F) {
 		newFuncInfo->loopInfo->print(*outputLog);
 		*outputLog << "\n";
 		// find all the loops in this function
-		for (LoopInfo::reverse_iterator li = newFuncInfo->loopInfo->rbegin(), le = newFuncInfo->loopInfo->rend(); li != le; li++) {
+		for (LoopInfo::reverse_iterator li = newFuncInfo->loopInfo->rbegin(),
+										le = newFuncInfo->loopInfo->rend(); li != le; li++) {
 			*outputLog << "Encountered a loop!\n";
 			(*li)->print(*outputLog);
 			*outputLog << "\n" << (*li)->isAnnotatedParallel() << "\n";
@@ -949,7 +953,8 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 	return scheduled;
 }
 
-bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
+bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph,
+		ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
 	*outputLog << __func__ << " for function " << F->getName() << "\n";
 
 	print_execution_order(execOrder);
@@ -966,7 +971,11 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		staticDeps.clear();
 		DependenceGraph::get_all_basic_block_dependencies(*depGraph, selfBB, staticDeps);
 
+		// print out the static deps
 		*outputLog << "Found number of static dependences: " << staticDeps.size() << "\n";
+		for (auto sdi = staticDeps.begin(); sdi != staticDeps.end(); sdi++) {
+			*outputLog << "\tStatic dependence with: " << (*sdi)->getName() << "\n";
+		}
 
 		// dynamicDeps vector keeps track of vertices in dynamic execution trace
 		std::vector<TraceGraph_vertex_descriptor> dynamicDeps;
@@ -978,15 +987,11 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 			BasicBlock *depBB = *sIt;
 			// find corresponding execution order vector
 			auto search = (*execOrder).find(depBB);
-			*outputLog << "Some\n";
 			assert(search != (*execOrder).end());
 
 			int currExec = search->second.first;
 			std::vector<TraceGraph_vertex_descriptor> &execOrderVec = search->second.second;
-			*outputLog << "Thing\n";
-			*outputLog << currExec << " " << execOrderVec.size() << "\n";
 			assert((int) currExec <= (int) execOrderVec.size());
-			*outputLog << "old\n";
 
 			if (currExec < 0) {
 				*outputLog << "Dependent basic block hasn't been executed yet. " << depBB->getName() << "\n";
@@ -995,6 +1000,20 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 				// the dependent basic block has been executed before this basic block, so possibly
 				// need to add a dependence edge
 				TraceGraph_vertex_descriptor dynDep = execOrderVec[currExec];
+
+				bool dynamicDepExists = dynamic_memory_dependence_exists(self, dynDep, graph);
+				bool trueDepExists = DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[dynDep].basicblock, *depGraph);
+				*outputLog << "dynamicDepExists: " << dynamicDepExists << "\n";
+				*outputLog << "trueDepExists: " << trueDepExists << "\n";
+				if (!StaticDepsOnly && !dynamicDepExists && !trueDepExists) {
+					// don't add edge to node for which there are no true dependences
+					// nor any dynamic memory dependences
+					*outputLog << "Dynamic execution determined no true or memory dependences between ";
+					*outputLog << (*graph)[self].name << " (" << self << ") and " << (*graph)[dynDep].name << " (" << dynDep << ")\n";
+					continue;
+				}
+
+
 				dynamicDeps.push_back(dynDep);
 			}
 		}
@@ -1010,12 +1029,22 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		
 		// add dependency edges to graph
 		for (auto it = dynamicDeps.begin(); it != dynamicDeps.end(); it++) {
-			if (!dynamic_memory_dependence_exists(self, *it, graph) && 
-				!DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[*it].basicblock, *depGraph)) {
+			/*
+			bool dynamicDepExists = dynamic_memory_dependence_exists(self, *it, graph);
+			bool trueDepExists = DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[*it].basicblock, *depGraph);
+			*outputLog << "dynamicDepExists: " << dynamicDepExists << "\n";
+			*outputLog << "trueDepExists: " << trueDepExists << "\n";
+			if (!StaticDepsOnly && !dynamicDepExists && !trueDepExists) {
 				// don't add edge to node for which there are no true dependences
 				// nor any dynamic memory dependences
+				*outputLog << "Dynamic execution determined no true or memory dependences between ";
+				*outputLog << (*graph)[self].name << " (" << self << ") and " << (*graph)[*it].name << " (" << *it << ")\n";
 				continue;
 			}
+			*/
+
+			*outputLog << "Dynamic execution determined true or memory dependences EXIST between ";
+			*outputLog << (*graph)[self].name << " (" << self << ") and " << (*graph)[*it].name << " (" << *it << ")\n";
 			boost::add_edge(*it, self, *graph);
 		}
 
@@ -1024,6 +1053,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		assert(search != (*execOrder).end());
 		search->second.first++;
 	}
+	return true;
 }
 
 
@@ -1038,10 +1068,10 @@ bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descrip
 							TraceGraph_vertex_descriptor parent, TraceGraphList_iterator graph) {
 	// examine each memory tuple between the two vertices
 	// [1] compare parent store with child load RAW
-
 	// [2] compare parent load with child store WAR
-
 	// [3] compare parent store with child store WAW
+
+	*outputLog << "determine if dynamic memory dependences exist\n";
 
 	std::vector<std::pair<uint64_t, uint64_t> > &pWrite = (*graph)[parent].memoryWriteTuples;
 	std::vector<std::pair<uint64_t, uint64_t> > &cWrite = (*graph)[child].memoryWriteTuples;
@@ -1051,12 +1081,16 @@ bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descrip
 		for (auto cwit = cWrite.begin(); cwit != cWrite.end(); cwit++) {
 			// [3]
 			if (memory_accesses_conflict(*cwit, *pwit)) {
+				*outputLog << "WAW conflict between : (" << pwit->first << ", " << pwit->second;
+				*outputLog << ") and (" << cwit->first << ", " << cwit->second << ")\n";;
 				return true;
 			}
 		}
 		for (auto crit = cRead.begin(); crit != cRead.end(); crit++) {
 			// [1]
 			if (memory_accesses_conflict(*crit, *pwit)) {
+				*outputLog << "RAW conflict between : (" << pwit->first << ", " << pwit->second;
+				*outputLog << ") and (" << crit->first << ", " << crit->second << ")\n";;
 				return true;
 			}
 		}
@@ -1066,6 +1100,8 @@ bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descrip
 		for (auto cwit = cWrite.begin(); cwit != cWrite.end(); cwit++) {
 			// [2]
 			if (memory_accesses_conflict(*cwit, *prit)) {
+				*outputLog << "WAR conflict between : (" << prit->first << ", " << prit->second;
+				*outputLog << ") and (" << cwit->first << ", " << cwit->second << ")\n";;
 				return true;
 			}
 		}
@@ -1075,7 +1111,8 @@ bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descrip
 }
 
 
-bool AdvisorAnalysis::memory_accesses_conflict(std::pair<uint64_t, uint64_t> &access1, std::pair<uint64_t, uint64_t> &access2) {
+bool AdvisorAnalysis::memory_accesses_conflict(std::pair<uint64_t, uint64_t> &access1, 
+														std::pair<uint64_t, uint64_t> &access2) {
 	assert(access1.second > 0 && access2.second > 0);
 	if (access1.first > access2.first) {
 		if (access1.first < (access2.first + access2.second)) {
@@ -1113,7 +1150,8 @@ bool reverse_vertex_sort(TraceGraph_vertex_descriptor a, TraceGraph_vertex_descr
 // Given a dynamic trace graph and a vector of vertices for which a executed basic block is
 // dependent, remove the dependent vertices which are redundant. A redundant vertices are 
 // those which are depended on by other dependent vertices.
-void AdvisorAnalysis::remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps) {
+void AdvisorAnalysis::remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, 
+									std::vector<TraceGraph_vertex_descriptor> &dynamicDeps) {
 	// sort in reverse order, may have more chance to find and remove redundancies if
 	// we start with vertices that executed later
 	std::sort(dynamicDeps.begin(), dynamicDeps.end(), reverse_vertex_sort);
@@ -1125,7 +1163,9 @@ void AdvisorAnalysis::remove_redundant_dynamic_dependencies(TraceGraphList_itera
 }
 
 
-void AdvisorAnalysis::recursively_remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, std::vector<TraceGraph_vertex_descriptor> &dynamicDeps, std::vector<TraceGraph_vertex_descriptor>::iterator search, TraceGraph_vertex_descriptor v) {
+void AdvisorAnalysis::recursively_remove_redundant_dynamic_dependencies(TraceGraphList_iterator graph, 
+				std::vector<TraceGraph_vertex_descriptor> &dynamicDeps, 
+				std::vector<TraceGraph_vertex_descriptor>::iterator search, TraceGraph_vertex_descriptor v) {
 	// if v already exists as a parent/ancestor, remove from list because it is redundant
 	std::vector<TraceGraph_vertex_descriptor>::iterator found = std::find(search+1, dynamicDeps.end(), v);
 	if (found != dynamicDeps.end()) {
@@ -1572,7 +1612,8 @@ bool AdvisorAnalysis::basicblock_control_flow_dependent(BasicBlock *child, Basic
 }
 
 
-void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_vertex_descriptor> &newParents, TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraph &graph) {
+void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_vertex_descriptor> &newParents, 
+		TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraph &graph) {
 	//std::cerr << __func__ << " parent: " << graph[parent].name << "\n";
 	if (parent == child) {
 		assert(0);
@@ -1621,7 +1662,8 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_vertex_descriptor>
 
 // Function: annotate_schedule_for_call
 // Return: true if successful, false otherwise
-bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle) {
+bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, 
+					std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle) {
 	// get the graph
 	TraceGraphList_iterator graph = graph_it;
 	//TraceGraph graph = *graph_it;
@@ -1854,7 +1896,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 	// we care about area and delay
 	unsigned area = UINT_MAX;
-	unsigned delay = UINT_MAX;
+	//unsigned delay = UINT_MAX;
 
 	std::cerr << "Progress bar |";
 	while (!done) {
@@ -2110,7 +2152,8 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 // and the resource constraints embedded in the IR as metadata to determine
 // the latency of the particular function call instance represented by this
 // execution trace
-unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F) {
+unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, 
+						TraceGraphList_iterator graph_it, Function *F) {
 	*outputLog << __func__ << "\n";
 
 	TraceGraph graph = *graph_it;

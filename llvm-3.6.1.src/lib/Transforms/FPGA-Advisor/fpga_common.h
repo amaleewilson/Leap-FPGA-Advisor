@@ -423,10 +423,11 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 // Unconstrained scheduler -- does not account for resource limitations in scheduling
 class ScheduleVisitor : public boost::default_dfs_visitor {
 	public:
-		int mutable lastCycle;
 		TraceGraphList_iterator graph_ref;
-		int *lastCycle_ref;
 		std::map<BasicBlock *, int> &LT;
+		int mutable lastCycle;
+		int *lastCycle_ref;
+
 		ScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle) {}
 
 		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
@@ -453,17 +454,19 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 			*lastCycle_ref = std::max(*lastCycle_ref, end);
 			//std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
 		}
+
 }; // end class ScheduleVisitor
 
 
 class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 	public:
-		int mutable lastCycle;
 		TraceGraph *graph_ref;
+		std::map<BasicBlock *, int> &LT;
+		int mutable lastCycle;
 		int *lastCycle_ref;
 		int *cpuCycle_ref;
-		std::map<BasicBlock *, int> &LT;
 		std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable;
+
 		ConstrainedScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
 		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
