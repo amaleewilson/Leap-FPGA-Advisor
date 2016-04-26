@@ -76,6 +76,7 @@
 #include <fstream>
 #include <regex>
 #include <time.h>
+#include <exception>
 
 #define DEBUG_TYPE "fpga-advisor-analysis"
 
@@ -581,7 +582,11 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			
 			// make a non-const copy of line
 			std::vector<char> lineCopy(line.begin(), line.end());
-			lineCopy.push_back(0);
+			try {
+				lineCopy.push_back(0);
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
 
 			//=----------------------------=//
 			char *pch = std::strtok(&lineCopy[0], delimiter);
@@ -609,8 +614,11 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				TraceGraphList emptyList;
 				executionGraph.insert(std::make_pair(F, emptyList));
 				TraceGraph newGraph;
-				executionGraph[F].push_back(newGraph);
-				
+				try {
+					executionGraph[F].push_back(newGraph);
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
 				// set latest seen graph
 				//latestGraph = (executionGraph[F].end()) - 1;
 
@@ -618,18 +626,30 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				executionOrderListMap.insert(std::make_pair(F, emptyOrderList));
 				ExecutionOrder newOrder;
 				newOrder.clear();
-				executionOrderListMap[F].push_back(newOrder);
+				try {
+					executionOrderListMap[F].push_back(newOrder);
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
 			} else if (fGraph != executionGraph.end() && fOrder != executionOrderListMap.end()) {
 				// function exists
 				TraceGraph newGraph;
-				fGraph->second.push_back(newGraph);
+				try {
+					fGraph->second.push_back(newGraph);
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
 
 				// set latest seen graph
 				//latestGraph = (fGraph->second.end()) - 1;
 
 				ExecutionOrder newOrder;
 				newOrder.clear();
-				fOrder->second.push_back(newOrder);
+				try {
+					fOrder->second.push_back(newOrder);
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
 			} else {
 				assert(0);
 			}
@@ -640,7 +660,11 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 			// make a non-const copy of line
 			std::vector<char> lineCopy(line.begin(), line.end());
-			lineCopy.push_back(0);
+			try {
+				lineCopy.push_back(0);
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
 
 			//=----------------------------=//
 			// BasicBlock:<space>bbName<space>Function:<space>funcName\n
@@ -717,11 +741,20 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				// insert BB into order
 				std::vector<TraceGraph_vertex_descriptor> newVector;
 				newVector.clear();
-				newVector.push_back(currVertex);
-				currOrder.insert(std::make_pair(BB, std::make_pair(-1, newVector)));
+				try {
+					newVector.push_back(currVertex);
+					currOrder.insert(std::make_pair(BB, std::make_pair(-1, newVector)));
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
+
 			} else {
 				// append to order
-				search->second.second.push_back(currVertex);
+				try {
+					search->second.second.push_back(currVertex);
+				} catch (std::exception &e) {
+					std::cerr << "An error occured." << e.what() << "\n";
+				}
 			}
 
 			// increment the node ID
@@ -735,7 +768,11 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 			// make a non-const copy of line
 			std::vector<char> lineCopy(line.begin(), line.end());
-			lineCopy.push_back(0);
+			try {
+				lineCopy.push_back(0);
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
 
 			//=---------------------------------=//
 			// Store<space>at<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
@@ -760,15 +797,22 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			*outputLog << "Store width in bytes : " << width << "\n";
 
 			TraceGraph &latestGraph = executionGraph[latestFunction].back();
-			latestGraph[latestVertex].memoryWriteTuples.push_back(std::make_pair(addrStart, width));
-
+			try {
+				latestGraph[latestVertex].memoryWriteTuples.push_back(std::make_pair(addrStart, width));
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
 
 		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
 			const char *delimiter = " ";
 
 			// make a non-const copy of line
 			std::vector<char> lineCopy(line.begin(), line.end());
-			lineCopy.push_back(0);
+			try {
+				lineCopy.push_back(0);
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
 
 			//=---------------------------------=//
 			// Load<space>from<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
@@ -793,13 +837,27 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			*outputLog << "Load width in bytes : " << width << "\n";
 
 			TraceGraph &latestGraph = executionGraph[latestFunction].back();
-			latestGraph[latestVertex].memoryReadTuples.push_back(std::make_pair(addrStart, width));
-			
+			std::pair<uint64_t, uint64_t> addrWidthTuple = std::make_pair(addrStart, width);
+			*outputLog << "after pair\n";
+			try {
+				//latestGraph[latestVertex].memoryReadTuples.push_back(std::make_pair(addrStart, width));
+				*outputLog << "before push_back read tuples " << latestGraph[latestVertex].memoryReadTuples.size() << "\n";
+				//latestGraph[latestVertex].memoryReadTuples.push_back(addrWidthTuple);
+				latestGraph[latestVertex].memoryReadTuples.emplace_back(addrStart, width);
+				*outputLog << "after push_back read tuples\n";
+			} catch (std::exception &e) {
+				std::cerr << "An error occured." << e.what() << "\n";
+			}
+			*outputLog << "after load\n";
+
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			// nothing to do really...
 		} else {
-			errs() << "Unexpected trace input!\n" << line << "\n";
-			return false;
+			//errs() << "Unexpected trace input!\n" << line << "\n";
+			//return false;
+			// ignore, probably program output
+			// I'm going to have to deal with the issue of if previous program
+			// output doesn't append \n .. okay, deal with this later, should be easy
 		}
 	}
 	
@@ -1890,7 +1948,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 	// FIXME
 	// for now just hard code some area...
-	unsigned areaConstraint = 100;
+	unsigned areaConstraint = 1000;
 
 	bool done = false;
 

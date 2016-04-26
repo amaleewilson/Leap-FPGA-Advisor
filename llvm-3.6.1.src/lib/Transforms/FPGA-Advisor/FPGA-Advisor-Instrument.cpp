@@ -96,7 +96,7 @@ void AdvisorInstr::instrument_function(Function *F) {
 	std::vector<Value *> printfArgs;
 
 	IRBuilder<> builder(entry->getFirstInsertionPt());
-	StringRef funcMsgString = StringRef("Entering Function: %s\n");
+	StringRef funcMsgString = StringRef("\nEntering Function: %s\n");
 	Value *funcMsg = builder.CreateGlobalStringPtr(funcMsgString, "func_msg_string");
 	printfArgs.push_back(funcMsg);
 	
@@ -126,7 +126,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 
 	IRBuilder<> builder(BB->getFirstInsertionPt());
 
-	StringRef bbMsgString = StringRef("BasicBlock: %s Function: %s\n");
+	StringRef bbMsgString = StringRef("\nBasicBlock: %s Function: %s\n");
 	Value *bbMsg = builder.CreateGlobalStringPtr(bbMsgString, "bb_msg_string");
 	Value *bbNameMsg = builder.CreateGlobalStringPtr(BB->getName(), "bb_name_string");
 	Value *funcNameMsg = builder.CreateGlobalStringPtr(BB->getParent()->getName(), "func_name_string");
@@ -143,7 +143,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 		BB->getTerminator()->print(*outputLog);
 		*outputLog << "\n";
 
-		StringRef retMsgString = StringRef("Return from: %s\n");
+		StringRef retMsgString = StringRef("\nReturn from: %s\n");
 		Value *retMsg = builder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
 
 		printfArgs.push_back(retMsg);
@@ -187,7 +187,7 @@ void AdvisorInstr::instrument_load(LoadInst *LI) {
 
 	// print right after the load
 	IRBuilder<> builder(LI);
-	StringRef loadAddrMsgString = StringRef("Load from address: %p size in bytes: " + sizeString + "\n");
+	StringRef loadAddrMsgString = StringRef("\nLoad from address: %p size in bytes: " + sizeString + "\n");
 	Value *loadAddrMsg = builder.CreateGlobalStringPtr(loadAddrMsgString, "load_addr_msg_string");
 	printfArgs.push_back(loadAddrMsg);
 
@@ -226,7 +226,7 @@ void AdvisorInstr::instrument_store(StoreInst *SI) {
 
 	// print right after the store
 	IRBuilder<> builder(SI);
-	StringRef storeAddrMsgString = StringRef("Store at address: %p size in bytes: " + sizeString + "\n");
+	StringRef storeAddrMsgString = StringRef("\nStore at address: %p size in bytes: " + sizeString + "\n");
 	Value *storeAddrMsg = builder.CreateGlobalStringPtr(storeAddrMsgString, "store_addr_msg_string");
 	printfArgs.push_back(storeAddrMsg);
 
