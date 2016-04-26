@@ -43,7 +43,6 @@ LLVM_SRC_HOME=$(LLVM_HOME)llvm-3.6.1.src/
 
 # set to -debug to output debug messages in opt
 #DEBUG= -debug
-DEBUG= 
 
 # set tools
 CLANG=clang
@@ -97,6 +96,11 @@ analysis: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
 	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
+
+# generate call graph for program
+call-graph:
+	$(OPT) -dot-callgraph < $(NAME).opt.bc > /dev/null
+	# outputs callgraph.dot
 
 # convert all .dot to .pdf
 convert-graph: $(PDF_FILES)
