@@ -137,21 +137,6 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 	printfArgs.clear();
 
-	// if this basicblock returns from a function, print that message
-	if (isa<ReturnInst>(BB->getTerminator())) {
-		*outputLog << "Inserting printf call for return: ";
-		BB->getTerminator()->print(*outputLog);
-		*outputLog << "\n";
-
-		StringRef retMsgString = StringRef("\nReturn from: %s\n");
-		Value *retMsg = builder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
-
-		printfArgs.push_back(retMsg);
-		printfArgs.push_back(funcNameMsg);
-		builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
-		printfArgs.clear();
-	}
-
 	// now insert calls to printf for memory related instructions
 	for (auto I = BB->begin(); I != BB->end(); I++) {
 		if (isa<StoreInst>(I)) {
@@ -159,6 +144,23 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 		} else if (isa<LoadInst>(I)) {
 			instrument_load(dyn_cast<LoadInst>(I));
 		}
+	}
+
+	// set insertion point at end of basic block right before the terminator
+	IRBuilder<> retBuilder(BB->getTerminator());
+	// if this basicblock returns from a function, print that message
+	if (isa<ReturnInst>(BB->getTerminator())) {
+		*outputLog << "Inserting printf call for return: ";
+		BB->getTerminator()->print(*outputLog);
+		*outputLog << "\n";
+
+		StringRef retMsgString = StringRef("\nReturn from: %s\n");
+		Value *retMsg = retBuilder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
+
+		printfArgs.push_back(retMsg);
+		printfArgs.push_back(funcNameMsg);
+		retBuilder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+		printfArgs.clear();
 	}
 }
 
