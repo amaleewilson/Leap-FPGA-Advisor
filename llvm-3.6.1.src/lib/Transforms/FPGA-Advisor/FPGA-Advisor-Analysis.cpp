@@ -172,13 +172,16 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 
 	// basic statistics gathering
 	// also populates the functionMap
-	visit(M);
+	// disable this statistic for now
+	//visit(M);
+
+	*outputLog << "Finished visit.\n";
 	
 	//=------------------------------------------------------=//
 	// [3] Read trace from file into memory
 	//=------------------------------------------------------=//
 	if (! get_program_trace(TraceFileName)) {
-		errs() << "Could not find trace file: " << TraceFileName << "!\n";
+		errs() << "Could not process trace file: " << TraceFileName << "!\n";
 		return false;
 	}
 
@@ -546,6 +549,8 @@ bool AdvisorAnalysis::does_function_call_external_function(CallGraphNode *CGN) {
 	return result;
 }
 
+
+#if 0
 // Function: get_program_trace
 // Return: false if unsuccessful
 // Reads input trace file, parses and stores trace into executionTrace map
@@ -865,6 +870,396 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 	return true;
 }
+#endif
+
+// Function: get_program_trace
+// Return: false if unsuccessful
+// Reads input trace file, parses and stores trace into executionTrace map
+// TODO: do not add to trace the basic blocks which have only a branch instruction
+bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
+	// the instrumentation phase will instrument all functions as long as
+	// they are not external to the module (this will include recursive functions)
+	// when recording the trace, create the trace for each function encountered,
+	// however, simply ignore them later
+
+	// read file
+	ifstream fin;
+	fin.open(fileIn.c_str());
+	if (!fin.good()) {
+		return false; // file not found
+	}
+
+	std::string line;
+
+	// unique ID for each basic block executed
+	int ID = 0;
+
+	// for keeping track of which function and execution graph to insert into
+	TraceGraph_vertex_descriptor lastVertex;
+	TraceGraphList_iterator latestTraceGraph;
+	Function *latestFunction = NULL;
+	ExecutionOrderList_iterator latestExecutionOrder;
+
+	// use a stack to keep track of where we should return to
+	std::stack<FunctionExecutionRecord> funcStack;
+
+	unsigned int lineNum = 0;
+	while (std::getline(fin, line)) {
+		*outputLog << "PROCESSING LINE: " << line << " (" << lineNum++ << ")\n";
+		// There are 5 types of messages:
+		// 1. Enter Function: <func name>
+		// 2. Basic Block: <basic block name> Function: <func name>
+		// 3. Return from: <func name>
+		// 4. Store at address: <addr start> size in bytes: <size>
+		// 5. Load from address: <addr start> size in bytes: <size>
+		if (std::regex_match(line, std::regex("(Entering Function: )(.*)"))) {
+			if (!process_function_entry(line, &latestFunction, latestTraceGraph, lastVertex, latestExecutionOrder, funcStack)) {
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
+			if (!process_basic_block_entry(line, ID, lastVertex, latestExecutionOrder)) {
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Store at address: )(.*)( size in bytes: )(.*)") )) {
+			if (!process_store(line, latestFunction, lastVertex)) {
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
+			if (!process_load(line, latestFunction, lastVertex)) {
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
+			if (!process_function_return(line, &latestFunction, funcStack, latestTraceGraph, lastVertex, latestExecutionOrder)) {
+				return false;
+			}
+		} else {
+			// ignore, probably program output
+		}
+	}
+	return true;
+}
+
+
+// process one line of trace containing return
+bool AdvisorAnalysis::process_function_return(const std::string &line, Function **function, std::stack<FunctionExecutionRecord> &stack, TraceGraphList_iterator &lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator &lastExecutionOrder) {
+	*outputLog << __func__ << " " << line << "\n";
+	
+	const char *delimiter = " ";
+
+	// make non-const copy of line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	//=---------------------------------=//
+	// Return<space>from:<space>function
+	char *pch = std::strtok(&lineCopy[13], delimiter);
+	std::string funcString(pch);
+	//=---------------------------------=//
+
+	// make sure that this is the last function on stack
+	Function *F = find_function_by_name(funcString);
+	assert(F);
+
+
+	// update current function after returning
+	if (*function == NULL) {
+		return false;
+	} else {
+		*function = stack.top().function;
+		lastTraceGraph = stack.top().graph;
+		lastVertex = stack.top().vertex;
+		lastExecutionOrder = stack.top().executionOrder;
+		*outputLog << "<<<< Return to function " << (*function)->getName() << "\n";
+	}
+
+	stack.pop();
+
+	return true;
+}
+
+
+// process one line of trace containing load
+bool AdvisorAnalysis::process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex) {
+	*outputLog << __func__ << " " << line << "\n";
+	const char *delimiter = " ";
+
+	// make a non-const copy of line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	// separate line by space to get keywords
+	//=---------------------------------=//
+	// Load<space>from<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
+	// separate out string by tokens
+	char *pch = std::strtok(&lineCopy[19], delimiter);
+	std::string addrString(pch);
+
+	pch = strtok(NULL, delimiter);
+	// size
+	pch = strtok(NULL, delimiter);
+	// in
+	pch = strtok(NULL, delimiter);
+	// bytes:
+	pch = strtok(NULL, delimiter);
+	std::string byteString(pch);
+	//=---------------------------------=//
+
+	// convert the string to uint64_t
+	uint64_t addrStart = std::strtoul(addrString.c_str(), NULL, 0);
+	uint64_t width = std::strtoul(byteString.c_str(), NULL, 0);
+	*outputLog << "Discovered a load with starting address : " << addrStart << "\n";
+	*outputLog << "Load width in bytes : " << width << "\n";
+
+	TraceGraph &latestGraph = executionGraph[function].back();
+	//std::pair<uint64_t, uint64_t> addrWidthTuple = std::make_pair(addrStart, width);
+	*outputLog << "after pair\n";
+	try {
+		//latestGraph[latestVertex].memoryReadTuples.push_back(std::make_pair(addrStart, width));
+		*outputLog << "before push_back read tuples " << latestGraph[lastVertex].memoryReadTuples.size() << "\n";
+		//latestGraph[latestVertex].memoryReadTuples.push_back(addrWidthTuple);
+		latestGraph[lastVertex].memoryReadTuples.emplace_back(addrStart, width);
+		*outputLog << "after push_back read tuples\n";
+	} catch (std::exception &e) {
+		std::cerr << "An error occured." << e.what() << "\n";
+	}
+	*outputLog << "after load\n";
+
+	return true;
+}
+
+
+// process one line of trace containing store
+bool AdvisorAnalysis::process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex) {
+	*outputLog << __func__ << " " << line << "\n";
+	const char *delimiter = " ";
+
+	// make a non-const copy of line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	// separate line by space to get keywords
+	//=---------------------------------=//
+	// Store<space>at<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
+	// separate out string by tokens
+	char *pch = std::strtok(&lineCopy[18], delimiter);
+	std::string addrString(pch);
+
+	pch = strtok(NULL, delimiter);
+	// size
+	pch = strtok(NULL, delimiter);
+	// in
+	pch = strtok(NULL, delimiter);
+	// bytes:
+	pch = strtok(NULL, delimiter);
+	std::string bytesString(pch);
+	//=---------------------------------=//
+
+	// convert the string to uint64_t
+	uint64_t addrStart = std::strtoul(addrString.c_str(), NULL, 0);
+	uint64_t width = std::strtoul(bytesString.c_str(), NULL, 0);
+	*outputLog << "Discovered a store with starting address : " << addrStart << "\n";
+	*outputLog << "Store width in bytes : " << width << "\n";
+
+	TraceGraph &latestGraph = executionGraph[function].back();
+	try {
+		latestGraph[lastVertex].memoryWriteTuples.push_back(std::make_pair(addrStart, width));
+	} catch (std::exception &e) {
+		std::cerr << "An error occured." << e.what() << "\n";
+	}
+
+	return true;
+}
+
+
+
+// process one line of trace containing basic block entry
+bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder) {
+	*outputLog << __func__ << " " << line << "\n";
+	const char *delimiter = " ";
+
+	// make a non-const copy of line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	// separate line by space to get keywords
+	//=----------------------------=//
+	// BasicBlock:<space>bbName<space>Function:<space>funcName\n
+	// separate out string by tokens
+	char *pch = std::strtok(&lineCopy[0], delimiter);
+	// BasicBlock:
+	pch = strtok(NULL, delimiter);
+	// bbName
+	std::string bbString(pch);
+
+	pch = strtok(NULL, delimiter);
+	// Function:
+	pch = strtok(NULL, delimiter);
+	// funcName
+	std::string funcString(pch);
+	//=----------------------------=//
+
+	BasicBlock *BB = find_basicblock_by_name(funcString, bbString);
+	if (!BB) {
+		// could not find the basic block by name
+		errs() << "Could not find the basic block from trace in program!\n";
+		return false;
+	}
+
+	if (isa<TerminatorInst>(BB->getFirstNonPHI())) {
+		// if the basic block only contains a branch/control flow and no computation
+		// then skip it, do not add to graph
+		// TODO if this is what I end up doing, need to remove looking at these
+		// basic blocks when considering transitions ?? I think that already happens.
+		return true;
+	}
+
+	//==----------------------------------------------------------------==//
+	TraceGraph::vertex_descriptor currVertex = boost::add_vertex(executionGraph[BB->getParent()].back());
+	TraceGraph &currGraph = executionGraph[BB->getParent()].back();
+	currGraph[currVertex].basicblock = BB;
+	currGraph[currVertex].ID = ID;
+	currGraph[currVertex].minCycStart = -1;
+	currGraph[currVertex].minCycEnd = -1;
+	currGraph[currVertex].name = BB->getName().str();
+	currGraph[currVertex].memoryWriteTuples.clear();
+	currGraph[currVertex].memoryReadTuples.clear();
+	//==----------------------------------------------------------------==//
+
+	// add to execution order
+	// check if BB exists
+	//ExecutionOrder &currOrder = executionOrderListMap[BB->getParent()].back();
+	ExecutionOrderList_iterator currOrder = lastExecutionOrder;
+	ExecutionOrder_iterator search = currOrder->find(BB);
+	if (search == currOrder->end()) {
+		// insert BB into order
+		std::vector<TraceGraph_vertex_descriptor> newVector;
+		newVector.clear();
+		try {
+			newVector.push_back(currVertex);
+			currOrder->insert(std::make_pair(BB, std::make_pair(-1, newVector)));
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+
+	} else {
+		// append to order
+		try {
+			search->second.second.push_back(currVertex);
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+	}
+
+	// increment the node ID
+	ID++;
+
+	// set the latest added vertex
+	lastVertex = currVertex;
+
+	return true;
+}
+
+
+// processes one line of input from trace of entering a function
+bool AdvisorAnalysis::process_function_entry(const std::string &line, Function **function, TraceGraphList_iterator &latestTraceGraph, TraceGraph_vertex_descriptor &latestVertex, ExecutionOrderList_iterator &latestExecutionOrder, std::stack<FunctionExecutionRecord> &stack) {
+	*outputLog << __func__ << " " << line << "\n";
+	const char *delimiter = " ";
+
+	// append to stack when entering a function from another calling function
+	if (*function != NULL) {
+		// keep track of caller
+		FunctionExecutionRecord newRecord;
+		newRecord.function = *function;
+		newRecord.graph = latestTraceGraph;
+		newRecord.vertex = latestVertex;
+		newRecord.executionOrder = latestExecutionOrder;
+		stack.emplace(newRecord);
+	}
+
+	// make a non-const copy of line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	// separate by space to get keywords
+	//=----------------------------=//
+	char *pch = std::strtok(&lineCopy[0], delimiter);
+	// Entering
+	pch = strtok(NULL, delimiter);
+	// Function:
+	pch = strtok(NULL, delimiter);
+	// funcName
+	std::string funcString(pch);
+	//=----------------------------=//
+
+	Function *F = find_function_by_name(funcString);
+	if (!F) {
+		// could not find function by name
+		errs() << "Could not find the function from trace in program!\n";
+		return false;
+	}
+	*function = F;
+
+	// append to stack when entering function
+	//stack.push(F);
+	
+	// add to execution graph
+	//==----------------------------------------------------------------==//
+	ExecGraph_iterator fGraph = executionGraph.find(F);
+	ExecutionOrderListMap_iterator fOrder = executionOrderListMap.find(F);
+	if (fGraph == executionGraph.end() && fOrder == executionOrderListMap.end()) {
+		// function does not exist as entry in execGraph
+		TraceGraphList emptyList;
+		executionGraph.insert(std::make_pair(F, emptyList));
+		TraceGraph newGraph;
+		try {
+			executionGraph[F].push_back(newGraph);
+			// update the latest trace graph created
+			latestTraceGraph = executionGraph[F].end();
+			latestTraceGraph--; // go to the last element in list
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+
+		ExecutionOrderList emptyOrderList;
+		executionOrderListMap.insert(std::make_pair(F, emptyOrderList));
+		ExecutionOrder newOrder;
+		newOrder.clear();
+		try {
+			executionOrderListMap[F].push_back(newOrder);
+			latestExecutionOrder = executionOrderListMap[F].end();
+			latestExecutionOrder--;
+			*outputLog << "11111\n";
+			*outputLog << latestExecutionOrder->size() << "\n";
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+	} else if (fGraph != executionGraph.end() && fOrder != executionOrderListMap.end()) {
+		// function exists
+		TraceGraph newGraph;
+		try {
+			fGraph->second.push_back(newGraph);
+			// update the latest trace graph created
+			latestTraceGraph = fGraph->second.end();
+			latestTraceGraph--; // go to the last element in list
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+
+		ExecutionOrder newOrder;
+		newOrder.clear();
+		try {
+			fOrder->second.push_back(newOrder);
+			latestExecutionOrder = fOrder->second.end();
+			latestExecutionOrder--;
+		} catch (std::exception &e) {
+			std::cerr << "An error occured." << e.what() << "\n";
+		}
+	} else {
+		assert(0);
+	}
+	//==----------------------------------------------------------------==//
+	return true;
+}
 
 /*
 // TODO TODO TODO TODO TODO remember to check for external functions, I know
@@ -1045,7 +1440,11 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 			BasicBlock *depBB = *sIt;
 			// find corresponding execution order vector
 			auto search = (*execOrder).find(depBB);
-			assert(search != (*execOrder).end());
+			if (search == (*execOrder).end()) {
+				// static dependence on basic block which was not executed in run
+				continue;
+			}
+			//assert(search != (*execOrder).end());
 
 			int currExec = search->second.first;
 			std::vector<TraceGraph_vertex_descriptor> &execOrderVec = search->second.second;
@@ -1973,13 +2372,17 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			*outputLog << "Current basic block configuration.\n";
 			print_basic_block_configuration(F);
 		} else {
+			// terminate the process if:
+			// 1. removal of block results in increase in delay
+			// 2. there are no blocks to remove
+			
 			*outputLog << "Area constraint satisfied, remove non performing blocks.\n";
-			BasicBlock *removeBB;
-			int deltaDelay = INT_MAX;
+			BasicBlock *removeBB = NULL;
+			int deltaDelay = INT_MIN;
 			incremental_gradient_descent(F, removeBB, deltaDelay);
 
 			// only remove block if it doesn't negatively impact delay
-			if (deltaDelay >= 0) {
+			if (deltaDelay >= 0 && removeBB != NULL) {
 				decrement_basic_block_instance_count(removeBB);
 			}
 
@@ -1987,9 +2390,15 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			*outputLog << "Current basic block configuration.\n";
 			print_basic_block_configuration(F);
 
+			// [1]
 			if (deltaDelay < 0) {
 				done = true;
 			}
+
+			if (removeBB == NULL) {
+				done = true;
+			}
+
 		}
 	}
 

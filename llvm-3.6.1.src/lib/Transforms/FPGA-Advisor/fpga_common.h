@@ -529,6 +529,14 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 
 
 class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
+	// node to keep track of where to record trace information
+	typedef struct {
+		Function *function;
+		TraceGraphList_iterator graph;
+		TraceGraph_vertex_descriptor vertex;
+		ExecutionOrderList_iterator executionOrder;
+	} FunctionExecutionRecord;
+
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -567,6 +575,12 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void print_statistics();
 
 		bool get_program_trace(std::string fileIn);
+		bool process_function_return(const std::string &line, Function **function, std::stack<FunctionExecutionRecord> &stack, TraceGraphList_iterator &lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator &lastExecutionOrder);
+		bool process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
+		bool process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
+		bool process_basic_block_entry(const std::string &line, int &ID, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder);
+		bool process_function_entry(const std::string &line, Function **function, TraceGraphList_iterator &latestTraceGraph, TraceGraph_vertex_descriptor &latestVertex, ExecutionOrderList_iterator &latestExecutinoOrder, std::stack<FunctionExecutionRecord> &stack);
+
 		bool check_trace_sanity();
 		BasicBlock *find_basicblock_by_name(std::string funcName, std::string bbName);
 		Function *find_function_by_name(std::string funcName);
