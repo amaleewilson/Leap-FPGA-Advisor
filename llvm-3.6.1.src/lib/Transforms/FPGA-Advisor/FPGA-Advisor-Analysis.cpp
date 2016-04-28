@@ -185,6 +185,8 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 		return false;
 	}
 
+	*outputLog << "Finished importing program trace.\n";
+
 	// should also contain a sanity check to follow the trace and make sure
 	// the paths are valid
 	//if (! IgnoreSanity && ! check_trace_sanity()) {
@@ -914,22 +916,27 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 		// 5. Load from address: <addr start> size in bytes: <size>
 		if (std::regex_match(line, std::regex("(Entering Function: )(.*)"))) {
 			if (!process_function_entry(line, &latestFunction, latestTraceGraph, lastVertex, latestExecutionOrder, funcStack)) {
+				*outputLog << "process function entry: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
 			if (!process_basic_block_entry(line, ID, lastVertex, latestExecutionOrder)) {
+				*outputLog << "process basic block entry: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(Store at address: )(.*)( size in bytes: )(.*)") )) {
 			if (!process_store(line, latestFunction, lastVertex)) {
+				*outputLog << "process store: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
 			if (!process_load(line, latestFunction, lastVertex)) {
+				*outputLog << "process load: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			if (!process_function_return(line, &latestFunction, funcStack, latestTraceGraph, lastVertex, latestExecutionOrder)) {
+				*outputLog << "process function return: FAILED.\n";
 				return false;
 			}
 		} else {
@@ -964,6 +971,9 @@ bool AdvisorAnalysis::process_function_return(const std::string &line, Function 
 	// update current function after returning
 	if (*function == NULL) {
 		return false;
+	} else if (*function != NULL && stack.size() == 0) {
+		*function = NULL;
+		return true;
 	} else {
 		*function = stack.top().function;
 		lastTraceGraph = stack.top().graph;
@@ -972,7 +982,9 @@ bool AdvisorAnalysis::process_function_return(const std::string &line, Function 
 		*outputLog << "<<<< Return to function " << (*function)->getName() << "\n";
 	}
 
-	stack.pop();
+	if (stack.size() > 0) {
+		stack.pop();
+	}
 
 	return true;
 }
@@ -2159,7 +2171,8 @@ bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_ite
 		*/
 		TraceGraphVertexWriter<TraceGraph> vpw(*graph);
 		TraceGraphEdgeWriter<TraceGraph> epw(*graph);
-		std::ofstream outfile("maximal_schedule.dot");
+		std::string outfileName = "maximal_schedule." + F->getName().str() + ".dot";
+		std::ofstream outfile(outfileName);
 		boost::write_graphviz(outfile, *graph, vpw, epw);
 	}
 
