@@ -43,7 +43,8 @@
 
 #include "FPGA-Advisor-Instrument.h"
 
-#define DEBUG_TYPE "fpga-advisor-instrument"
+//#define DEBUG_TYPE "fpga-advisor-instrument"
+#define DEBUG_TYPE "fpga-advisor"
 
 using namespace llvm;
 

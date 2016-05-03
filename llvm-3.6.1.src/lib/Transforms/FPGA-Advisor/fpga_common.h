@@ -168,6 +168,10 @@ typedef struct {
 		void set_min_end(int _end) const { minCycEnd = _end;}
 		void set_start(int _start) const { cycStart = _start;}
 		void set_end(int _end) const { cycEnd = _end;}
+		int get_min_start() const { return minCycStart;}
+		int get_min_end() const { return minCycEnd;}
+		int get_start() const { return cycStart;}
+		int get_end() const { return cycEnd;}
 
 		BasicBlock *basicblock;
 		uint64_t ID;
@@ -330,7 +334,8 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 		//	issue than an area issue)
 		// 4) ambiguous pointers??? TODO
 		int instruction_area_complexity(Instruction *I) {
-			int complexity = 0;
+			// basic complexity of instruction is 1
+			int complexity = 1;
 			if (instruction_needs_fp(I)) {
 				complexity += get_fp_area_cost();
 			}
@@ -460,23 +465,31 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 
 class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 	public:
-		TraceGraph *graph_ref;
+		TraceGraphList_iterator graph_ref;
 		std::map<BasicBlock *, int> &LT;
 		int mutable lastCycle;
 		int *lastCycle_ref;
 		int *cpuCycle_ref;
 		std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable;
 
-		ConstrainedScheduleVisitor(TraceGraph &graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(&graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
+		ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
 		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
 			// if no parent, start at 0
 			int start = -1;
 			TraceGraph_in_edge_iterator ii, ie;
-			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
-				int transitionDelay = (int) boost::get(boost::edge_weight_t(), graph, *ii);
-				start = std::max(start, graph[boost::target(*ii, graph)].minCycEnd + transitionDelay);
+			for (boost::tie(ii, ie) = boost::in_edges(v, (*graph_ref)); ii != ie; ii++) {
+				TraceGraph_vertex_descriptor s = boost::source(*ii, (*graph_ref));
+				TraceGraph_vertex_descriptor t = boost::target(*ii, (*graph_ref));
+				std::cerr << (*graph_ref)[s].ID << " -> " << (*graph_ref)[t].ID << "\n";
+				int transitionDelay = (int) boost::get(boost::edge_weight_t(), (*graph_ref), *ii);
+
+				//std::cerr << "MINIMUM END CYCLE FOR EDGE: " << (*graph_ref)[s].get_end() << "\n";
+				//std::cerr << "TRANSITION DELAY: " << transitionDelay << "\n";
+				//std::cerr << "MAX START: " << start << "\n";
+				start = std::max(start, (*graph_ref)[s].get_end() + transitionDelay);
+				//std::cerr << "NEW START: " << start << "\n";
 			}
 			start += 1;
 
@@ -484,13 +497,13 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			// in that it also considers resource requirement
 			
 			// first sort the vector
-			auto search = resourceTable.find(graph[v].basicblock);
+			auto search = resourceTable.find((*graph_ref)[v].basicblock);
 			//assert(search != resourceTable.end());
 			if (search == resourceTable.end()) {
 				// if not found, could mean that either
 				// a) basic block to be executed on cpu
 				// b) resource table not initialized properly o.o
-				std::cerr << "Basic block " << graph[v].name << " not found in resource table.\n";
+				std::cerr << "Basic block " << (*graph_ref)[v].name << " not found in resource table.\n";
 				assert(0);
 			}
 
@@ -507,7 +520,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			start = std::max(start, resourceReady);
 
 			int end = start;
-			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
+			end += FunctionScheduler::get_basic_block_latency(LT, (*graph_ref)[v].basicblock);
 			
 			// update the occupied resource with the new end cycle
 			if (cpu) {
@@ -517,9 +530,11 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			}
 
 			//std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
-			//			" start: " << start << " end: " << end << "\n";
+						" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
+
+			//std::cerr << "VERTEX [" << v << "] START: " << (*graph_ref)[v].get_start() << " END: " << (*graph_ref)[v].get_end() << "\n";
 
 			// keep track of last cycle as seen by scheduler
 			*lastCycle_ref = std::max(*lastCycle_ref, end);
@@ -604,6 +619,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
+		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
+		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
 		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
 		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
@@ -660,13 +677,13 @@ class TraceGraphVertexWriter {
 				<< graph[v].cycEnd << "\"]";
 			*/
 			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
-			out	<< "<tr><td bgcolor=\"green\" border=\"1\"> " << graph[v].cycStart << "</td></tr>";
+			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_start() << "</td></tr>";
 			if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
-				out	<< "<tr><td bgcolor=\"gray\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
+				out	<< "<tr><td bgcolor=\"#FFFF33\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
 			} else {
-				out	<< "<tr><td border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";
+				out	<< "<tr><td bgcolor=\"#FFFFFF\" border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";
 			}
-			out	<< "<tr><td bgcolor=\"cyan\" border=\"1\"> " << graph[v].cycEnd << "</td></tr>";
+			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_end() << "</td></tr>";
 			out	<< "</table>>]";
 		}
 	private:
@@ -681,7 +698,7 @@ class TraceGraphEdgeWriter {
 		void operator()(std::ostream& out, const TraceGraph_edge_descriptor &e) const {
 			unsigned delay = boost::get(boost::edge_weight_t(), graph, e);
 			if (delay > 0) {
-				out << "[color=\"blue\" penwidth=\"3\" label=\"" << delay << "\"]";
+				out << "[color=\"red\" penwidth=\"4\" label=\"" << delay << "\"]";
 			}
 		}
 	private:

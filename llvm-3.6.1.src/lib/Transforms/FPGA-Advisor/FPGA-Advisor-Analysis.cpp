@@ -78,7 +78,8 @@
 #include <time.h>
 #include <exception>
 
-#define DEBUG_TYPE "fpga-advisor-analysis"
+//#define DEBUG_TYPE "fpga-advisor-analysis"
+#define DEBUG_TYPE "fpga-advisor"
 
 using namespace llvm;
 using namespace fpga;
@@ -115,6 +116,11 @@ static cl::opt<bool> NoMessage("no-message", cl::desc("If enabled, disables prin
 static cl::opt<bool> StaticDepsOnly("static-deps-only", 
 		cl::desc("If enabled, program is analyzed only with dependence information that is statically avaiable"), 
 		cl::Hidden, cl::init(false));
+static cl::opt<unsigned int> TraceThreshold("trace-threshold", cl::desc("Maximum lines of input trace to read"),
+		cl::Hidden, cl::init(UINT_MAX)
+);
+static cl::opt<unsigned int> AreaConstraint("area-constraint", cl::desc("Set the area constraint"),
+		cl::Hidden, cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // List of statistics -- not necessarily the statistics listed above,
@@ -390,6 +396,12 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	// Find constructs that are not supported by HLS
 	if (has_unsynthesizable_construct(F)) {
 		*outputLog << "Function contains unsynthesizable constructs, moving on.\n";
+		return false;
+	}
+
+	// was this function even executed in run
+	if (executionGraph.find(F) == executionGraph.end()) {
+		*outputLog << "Did not find execution of function in program trace. Skipping.\n";
 		return false;
 	}
 
@@ -905,8 +917,49 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	// use a stack to keep track of where we should return to
 	std::stack<FunctionExecutionRecord> funcStack;
 
+	bool showProgressBar = true;
+	// get total line number from file using wc command
+	FILE *in;
+	char buf[256];
+	
+	unsigned int fileLineNum;
+	unsigned int traceThreshold = TraceThreshold;
+
+	std::string cmd = "wc " + fileIn;
+	if (!(in = popen(cmd.c_str(), "r"))) {
+		// if cannot execute command, don't show progress bar
+		showProgressBar = false;
+		fileLineNum = UINT_MAX;
+	} else {
+		assert(fgets(buf, sizeof(buf), in) != NULL);
+		*outputLog << "WC " << buf << "\n";
+		char *pch = std::strtok(&buf[2], " ");
+		fileLineNum = atoi(pch);
+		*outputLog << "Total lines from " << fileIn << ": " << fileLineNum << "\n";
+		std::cerr << "Total lines " << fileLineNum << "\n";
+	}
+
+	std::cerr << "Processing program trace.\n";
+
 	unsigned int lineNum = 0;
+	unsigned int totalLineNum = std::min(traceThreshold, fileLineNum);
+
+	unsigned int times = 0;
 	while (std::getline(fin, line)) {
+		if (lineNum > traceThreshold) {
+			break;
+		}
+
+		if (showProgressBar) {
+			// print a processing progress bar
+			// 20 points, print progress every 5% processed
+			unsigned int fivePercent = totalLineNum / 20;
+			if ((lineNum % fivePercent) == 0) {
+				std::cerr << "[ " << 5 * times << "% ] " << lineNum << "\n";
+				times++;
+			}
+		}
+
 		*outputLog << "PROCESSING LINE: " << line << " (" << lineNum++ << ")\n";
 		// There are 5 types of messages:
 		// 1. Enter Function: <func name>
@@ -2361,6 +2414,9 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 	// FIXME
 	// for now just hard code some area...
 	unsigned areaConstraint = 1000;
+	if (AreaConstraint > 0) {
+		areaConstraint = AreaConstraint;
+	}
 
 	bool done = false;
 
@@ -2379,7 +2435,8 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			BasicBlock *removeBB;
 			int deltaDelay = INT_MAX;
 			incremental_gradient_descent(F, removeBB, deltaDelay);
-			decrement_basic_block_instance_count(removeBB);
+			//decrement_basic_block_instance_count(removeBB);
+			decrement_basic_block_instance_count_and_update_transition(removeBB);
 
 			// printout
 			*outputLog << "Current basic block configuration.\n";
@@ -2396,7 +2453,8 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 			// only remove block if it doesn't negatively impact delay
 			if (deltaDelay >= 0 && removeBB != NULL) {
-				decrement_basic_block_instance_count(removeBB);
+				//decrement_basic_block_instance_count(removeBB);
+				decrement_basic_block_instance_count_and_update_transition(removeBB);
 			}
 
 			// printout
@@ -2458,7 +2516,8 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
 	// try removing each basic block
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
-		if (decrement_basic_block_instance_count(BB)) {
+		//if (decrement_basic_block_instance_count(BB)) {
+		if (decrement_basic_block_instance_count_and_update_transition(BB)) {
 			*outputLog << "Performing removal of basic block " << BB->getName() << "\n";
 			// need to iterate through all calls made to function
 			unsigned latency = 0;
@@ -2470,7 +2529,7 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
 				// need to update edge weights before scheduling in case any blocks
 				// become implemented on cpu
-				update_transition_delay(fIt);
+				//update_transition_delay(fIt);
 
 				latency += schedule_with_resource_constraints(roots, fIt, F);
 			}
@@ -2500,7 +2559,8 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 			}
 
 			// restore the basic block count after removal
-			increment_basic_block_instance_count(BB);
+			//increment_basic_block_instance_count(BB);
+			increment_basic_block_instance_count_and_update_transition(BB);
 		} // else continue
 	}
 }
@@ -2669,7 +2729,7 @@ unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	//===----------------------------------------------------===//
 	for (std::vector<TraceGraph_vertex_descriptor>::iterator rV = roots.begin();
 			rV != roots.end(); rV++) {
-		ConstrainedScheduleVisitor vis(graph, *LT/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
+		ConstrainedScheduleVisitor vis(graph_it, *LT/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
 		boost::breadth_first_search(graph, vertex(0, graph), boost::visitor(vis).root_vertex(*rV));
 		//boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
 	}
@@ -2737,6 +2797,44 @@ bool AdvisorAnalysis::increment_basic_block_instance_count(BasicBlock *BB) {
 	BB->getTerminator()->setMetadata(MDName, N);
 	*/
 	set_basic_block_instance_count(BB, repFactor + 1);
+
+	return true;
+}
+
+// Function: decrement_basic_block_instance_count_and_update_transition
+// Return: false if decrement not successful
+bool AdvisorAnalysis::decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB) {
+	// decrement
+	if (!decrement_basic_block_instance_count(BB)) {
+		return false;
+	}
+
+	Function *F = BB->getParent();
+
+	// if successful, update the transition
+	// this is dumb and inefficient, but just do this for now
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); fIt != executionGraph[F].end(); fIt++) {
+		update_transition_delay(fIt);
+	}
+
+	return true;
+}
+
+// Function: increment_basic_block_instance_count_and_update_transition
+// Return: false if increment not successful
+bool AdvisorAnalysis::increment_basic_block_instance_count_and_update_transition(BasicBlock *BB) {
+	// decrement
+	if (!increment_basic_block_instance_count(BB)) {
+		return false;
+	}
+
+	Function *F = BB->getParent();
+
+	// if successful, update the transition
+	// this is dumb and inefficient, but just do this for now
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); fIt != executionGraph[F].end(); fIt++) {
+		update_transition_delay(fIt);
+	}
 
 	return true;
 }
@@ -2817,20 +2915,26 @@ unsigned AdvisorAnalysis::get_area_requirement(Function *F) {
 // Function: update_transition_delay
 // updates the trace execution graph edge weights
 void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
+	std::cerr << ">>>>>>>>>>=======================================================\n";
 	TraceGraph_edge_iterator ei, ee;
+	// look at each edge
 	for (boost::tie(ei, ee) = edges(*graph); ei != ee; ei++) {
 		TraceGraph_vertex_descriptor s = boost::source(*ei, *graph);
 		TraceGraph_vertex_descriptor t = boost::target(*ei, *graph);
 		bool sHwExec = (0 < get_basic_block_instance_count((*graph)[s].basicblock));
 		bool tHwExec = (0 < get_basic_block_instance_count((*graph)[t].basicblock));
+		std::cerr << "TRANSITION DELAY [" << s << "] -> [" << t << "]\n";;
+		std::cerr << "Source CPU: " << sHwExec << " Target CPU: " << tHwExec << "\n";
 		// add edge weight <=> transition delay when crossing a hw/cpu boundary
 		unsigned delay = 0;
 		if (sHwExec ^ tHwExec) {
+			std::cerr << "Transition cpu<->fpga\n";
 			bool CPUToHW = true;
 			if (sHwExec == true) {
 				// fpga -> cpu
 				CPUToHW = false;
 			}
+			// currently just returns 100
 			delay = get_transition_delay((*graph)[s].basicblock, (*graph)[t].basicblock, CPUToHW);
 		} else {
 			// should have no transition penalty, double make sure
@@ -2838,6 +2942,7 @@ void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
 		}
 		boost::put(boost::edge_weight_t(), *graph, *ei, delay);
 	}
+	std::cerr << "<<<<<<<<<<=======================================================\n";
 }
 
 
@@ -2863,6 +2968,7 @@ void AdvisorAnalysis::print_basic_block_configuration(Function *F) {
 
 
 void AdvisorAnalysis::print_optimal_configuration_for_all_calls(Function *F) {
+	std::cerr << "PRINTOUT OPTIMAL CONFIGURATION\n";
 	int callNum = 0;
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 			fIt != executionGraph[F].end(); fIt++) {
