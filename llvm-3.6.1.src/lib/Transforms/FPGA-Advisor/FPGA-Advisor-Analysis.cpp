@@ -85,6 +85,29 @@ using namespace llvm;
 using namespace fpga;
 using std::ifstream;
 
+
+//===----------------------------------------------------------------------===//
+// Having some fun with colors
+//===----------------------------------------------------------------------===//
+#define RESET   "\033[0m"
+#define BLACK   "\033[30m"      /* Black */
+#define RED     "\033[31m"      /* Red */
+#define GREEN   "\033[32m"      /* Green */
+#define YELLOW  "\033[33m"      /* Yellow */
+#define BLUE    "\033[34m"      /* Blue */
+#define MAGENTA "\033[35m"      /* Magenta */
+#define CYAN    "\033[36m"      /* Cyan */
+#define WHITE   "\033[37m"      /* White */
+#define BOLDBLACK   "\033[1m\033[30m"      /* Bold Black */
+#define BOLDRED     "\033[1m\033[31m"      /* Bold Red */
+#define BOLDGREEN   "\033[1m\033[32m"      /* Bold Green */
+#define BOLDYELLOW  "\033[1m\033[33m"      /* Bold Yellow */
+#define BOLDBLUE    "\033[1m\033[34m"      /* Bold Blue */
+#define BOLDMAGENTA "\033[1m\033[35m"      /* Bold Magenta */
+#define BOLDCYAN    "\033[1m\033[36m"      /* Bold Cyan */
+#define BOLDWHITE   "\033[1m\033[37m"      /* Bold White */
+
+
 //===----------------------------------------------------------------------===//
 // Some globals ... is that bad? :/
 // I can move this into the class and clean up every time a different function
@@ -158,6 +181,7 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	//=------------------------------------------------------=//
 	// [1] Initialization
 	//=------------------------------------------------------=//
+	// log file
 	raw_fd_ostream OL("fpga-advisor-analysis.log", AEC, sys::fs::F_RW);
 	outputLog = &OL;
 	if (NoMessage) {
@@ -166,6 +190,10 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 		DEBUG(outputLog = &dbgs());
 	}
 	*outputLog << "FPGA-Advisor Analysis Pass Starting.\n";
+
+	// output results
+	raw_fd_ostream OF("fpga-advisor-analysis.out", AEC, sys::fs::F_RW);
+	outputFile = &OF;
 
 	mod = &M;
 
@@ -419,7 +447,11 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	find_maximal_configuration_for_all_calls(F);
 
 	*outputLog << "Maximal basic block configuration.\n";
-	print_basic_block_configuration(F);
+	print_basic_block_configuration(F, outputLog);
+
+	// print this to output file
+	*outputFile << "Maximal basic block configuration.\n";
+	print_basic_block_configuration(F, outputFile);
 
 	std::cerr << "Finished computing maximal configuration\n";
 
@@ -437,10 +469,16 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	//	- for now, we will finish iterating when we find a local maximum of performance/area
 	find_optimal_configuration_for_all_calls(F);
 
-	*outputLog << "===-------------------------------------===";
+	*outputLog << "===-------------------------------------===\n";
 	*outputLog << "Final optimal basic block configuration.\n";
-	print_basic_block_configuration(F);
-	*outputLog << "===-------------------------------------===";
+	print_basic_block_configuration(F, outputLog);
+	*outputLog << "===-------------------------------------===\n";
+
+	// print this to output file
+	*outputFile << "===-------------------------------------===\n";
+	*outputFile << "Final optimal basic block configuration.\n";
+	print_basic_block_configuration(F, outputFile);
+	*outputFile << "===-------------------------------------===\n";
 
 	if (!HideGraph) {
 		print_optimal_configuration_for_all_calls(F);
@@ -933,7 +971,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	} else {
 		assert(fgets(buf, sizeof(buf), in) != NULL);
 		*outputLog << "WC " << buf << "\n";
-		char *pch = std::strtok(&buf[2], " ");
+		char *pch = std::strtok(&buf[0], " ");
 		fileLineNum = atoi(pch);
 		*outputLog << "Total lines from " << fileIn << ": " << fileLineNum << "\n";
 		std::cerr << "Total lines " << fileLineNum << "\n";
@@ -955,9 +993,10 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			// 20 points, print progress every 5% processed
 			unsigned int fivePercent = totalLineNum / 20;
 			if ((lineNum % fivePercent) == 0) {
-				std::cerr << "[ " << 5 * times << "% ] " << lineNum << "\n";
+				std::cerr << BOLDGREEN << " [ " << 5 * times << "% ] " << RESET << lineNum << "/" << totalLineNum << "\n";
 				times++;
 			}
+			std::cerr << RESET;
 		}
 
 		*outputLog << "PROCESSING LINE: " << line << " (" << lineNum++ << ")\n";
@@ -2427,7 +2466,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 	std::cerr << "Progress bar |";
 	while (!done) {
 		ConvergenceCounter++; // for stats
-		std::cerr << "="; // progress bar
+		std::cerr << BOLDMAGENTA << "=" << RESET; // progress bar
 
 		area = get_area_requirement(F);
 		if (area > areaConstraint) {
@@ -2440,7 +2479,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 			// printout
 			*outputLog << "Current basic block configuration.\n";
-			print_basic_block_configuration(F);
+			print_basic_block_configuration(F, outputLog);
 		} else {
 			// terminate the process if:
 			// 1. removal of block results in increase in delay
@@ -2459,7 +2498,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 			// printout
 			*outputLog << "Current basic block configuration.\n";
-			print_basic_block_configuration(F);
+			print_basic_block_configuration(F, outputLog);
 
 			// [1]
 			if (deltaDelay < 0) {
@@ -2915,7 +2954,7 @@ unsigned AdvisorAnalysis::get_area_requirement(Function *F) {
 // Function: update_transition_delay
 // updates the trace execution graph edge weights
 void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
-	std::cerr << ">>>>>>>>>>=======================================================\n";
+	//std::cerr << ">>>>>>>>>>=======================================================\n";
 	TraceGraph_edge_iterator ei, ee;
 	// look at each edge
 	for (boost::tie(ei, ee) = edges(*graph); ei != ee; ei++) {
@@ -2923,12 +2962,12 @@ void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
 		TraceGraph_vertex_descriptor t = boost::target(*ei, *graph);
 		bool sHwExec = (0 < get_basic_block_instance_count((*graph)[s].basicblock));
 		bool tHwExec = (0 < get_basic_block_instance_count((*graph)[t].basicblock));
-		std::cerr << "TRANSITION DELAY [" << s << "] -> [" << t << "]\n";;
-		std::cerr << "Source CPU: " << sHwExec << " Target CPU: " << tHwExec << "\n";
+		//std::cerr << "TRANSITION DELAY [" << s << "] -> [" << t << "]\n";;
+		//std::cerr << "Source CPU: " << sHwExec << " Target CPU: " << tHwExec << "\n";
 		// add edge weight <=> transition delay when crossing a hw/cpu boundary
 		unsigned delay = 0;
 		if (sHwExec ^ tHwExec) {
-			std::cerr << "Transition cpu<->fpga\n";
+			//std::cerr << "Transition cpu<->fpga\n";
 			bool CPUToHW = true;
 			if (sHwExec == true) {
 				// fpga -> cpu
@@ -2942,7 +2981,7 @@ void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
 		}
 		boost::put(boost::edge_weight_t(), *graph, *ei, delay);
 	}
-	std::cerr << "<<<<<<<<<<=======================================================\n";
+	//std::cerr << "<<<<<<<<<<=======================================================\n";
 }
 
 
@@ -2958,17 +2997,17 @@ unsigned AdvisorAnalysis::get_transition_delay(BasicBlock *source, BasicBlock *t
 
 
 
-void AdvisorAnalysis::print_basic_block_configuration(Function *F) {
-	*outputLog << "Basic Block Configuration:\n";
+void AdvisorAnalysis::print_basic_block_configuration(Function *F, raw_ostream *out) {
+	*out << "Basic Block Configuration:\n";
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		int repFactor = get_basic_block_instance_count(BB);
-		*outputLog << BB->getName() << "\t[" << repFactor << "]\n";
+		*out << BB->getName() << "\t[" << repFactor << "]\n";
 	}
 }
 
 
 void AdvisorAnalysis::print_optimal_configuration_for_all_calls(Function *F) {
-	std::cerr << "PRINTOUT OPTIMAL CONFIGURATION\n";
+	//std::cerr << "PRINTOUT OPTIMAL CONFIGURATION\n";
 	int callNum = 0;
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 			fIt != executionGraph[F].end(); fIt++) {

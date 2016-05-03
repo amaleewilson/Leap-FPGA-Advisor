@@ -481,8 +481,8 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			TraceGraph_in_edge_iterator ii, ie;
 			for (boost::tie(ii, ie) = boost::in_edges(v, (*graph_ref)); ii != ie; ii++) {
 				TraceGraph_vertex_descriptor s = boost::source(*ii, (*graph_ref));
-				TraceGraph_vertex_descriptor t = boost::target(*ii, (*graph_ref));
-				std::cerr << (*graph_ref)[s].ID << " -> " << (*graph_ref)[t].ID << "\n";
+				//TraceGraph_vertex_descriptor t = boost::target(*ii, (*graph_ref));
+				//std::cerr << (*graph_ref)[s].ID << " -> " << (*graph_ref)[t].ID << "\n";
 				int transitionDelay = (int) boost::get(boost::edge_weight_t(), (*graph_ref), *ii);
 
 				//std::cerr << "MINIMUM END CYCLE FOR EDGE: " << (*graph_ref)[s].get_end() << "\n";
@@ -633,7 +633,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool dynamic_memory_dependence_exists(TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraphList_iterator graph);
 		bool memory_accesses_conflict(std::pair<uint64_t, uint64_t> &access1, std::pair<uint64_t, uint64_t> &access2);
 
-		void print_basic_block_configuration(Function *F);
+		void print_basic_block_configuration(Function *F, raw_ostream *out);
 		void print_optimal_configuration_for_all_calls(Function *F);
 		void print_execution_order(ExecutionOrderList_iterator execOrder);
 
@@ -649,6 +649,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		CallGraph *callGraph;
 
 		raw_ostream *outputLog;
+
+		raw_ostream *outputFile;
 
 		// exeuctionTrace contains the execution traces separated by function
 		// the value for each key (function) is a vector, where each vector element
