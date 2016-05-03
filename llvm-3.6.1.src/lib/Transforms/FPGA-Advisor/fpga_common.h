@@ -530,7 +530,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			}
 
 			//std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
-						" start: " << start << " end: " << end << "\n";
+			//			" start: " << start << " end: " << end << "\n";
 			(*graph_ref)[v].set_start(start);
 			(*graph_ref)[v].set_end(end);
 
