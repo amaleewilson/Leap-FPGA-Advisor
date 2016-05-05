@@ -153,7 +153,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	printfArgs.push_back(bbMsg);
 	printfArgs.push_back(bbNameMsg);
 	printfArgs.push_back(funcNameMsg);
-	Value *bbprintf = builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 	printfArgs.clear();
 
 /*
@@ -181,7 +181,6 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	//===---------------------------------------------------===//
 	// [3] timer start	
 	//===---------------------------------------------------===//
-	//IRBuilder<> builderTimerStart(dyn_cast<Instruction>(bbprintf));
 	std::vector<Type *> paramType;
 	paramType.clear();
 
@@ -211,7 +210,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	clock_gettimeArgs.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0)); // null - CLOCK_MONOTONIC
 	clock_gettimeArgs.push_back(tp);
 
-	Value *clock_gettime = builder.CreateCall(clock_gettimeFunc, clock_gettimeArgs, llvm::Twine("clock_gettime"));
+	builder.CreateCall(clock_gettimeFunc, clock_gettimeArgs, llvm::Twine("clock_gettime"));
 
 	// create a print statement for the sec and nsec
 	StringRef clock_gettimeMsgString = StringRef("\nBasicBlock Clock get time start: %ld s %ld ns\n");
@@ -270,7 +269,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	std::vector<Value *> clock_gettimeArgs2;
 	clock_gettimeArgs2.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0)); // null - CLOCK_MONOTONIC
 	clock_gettimeArgs2.push_back(tp2);
-	Value *clock_gettime2 = endBuilder.CreateCall(clock_gettimeFunc, clock_gettimeArgs2, llvm::Twine("clock_gettime"));
+	endBuilder.CreateCall(clock_gettimeFunc, clock_gettimeArgs2, llvm::Twine("clock_gettime"));
 
 	// create a print statement for the sec and nsec
 	//StringRef clock_gettimeMsgString = StringRef("\nBasicBlock Clock get time: %ld s %ld ns\n");
