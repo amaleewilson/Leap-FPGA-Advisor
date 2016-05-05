@@ -77,6 +77,30 @@ using namespace llvm;
 
 namespace fpga {
 
+// Common helper functions
+// Function: get_basic_block_instance_count
+// Return: the number of instances of this basic block from metadata
+static int get_basic_block_instance_count(BasicBlock *BB) {
+	assert(BB);
+	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+	MDName += BB->getName().str();
+	MDNode *M = BB->getTerminator()->getMetadata(MDName);
+
+	int repFactor = -1;
+
+	assert(M);
+	assert(M->getOperand(0));
+
+	std::string repFactorStr = cast<MDString>(M->getOperand(0))->getString().str();
+	repFactor = stoi(repFactorStr);
+
+	//*outputLog << __func__ << " metadata: ";
+	//BB->getTerminator()->print(*outputLog);
+	//*outputLog << " replication factor: " << repFactor << "\n";
+
+	return repFactor;
+}
+
 // Dependence Graph type:
 // STL list container for OutEdge list
 // STL vector container for vertices
@@ -245,15 +269,29 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			return true;
 		}
 		static int get_basic_block_latency(std::map<BasicBlock *, int> &LT, BasicBlock *BB) {
+			int latency = 0;
 			auto search = LT.find(BB);
 			assert(search != LT.end());
-			return search->second;
+
+			latency = search->second;
+
+			// determine if the basic block is to be replicated in hardware
+			// if execution on cpu, multiply by some slow down factor FIXME
+			// we can do something more sophisticated here
+			int instanceCount = get_basic_block_instance_count(BB);
+			if (instanceCount <= 0) {
+				latency *= 4;
+			}
+
+			return latency;
 		}
+		/*
 		int get_basic_block_latency(BasicBlock *BB) {
 			auto search = latencyTable.find(BB);
 			assert(search != latencyTable.end());
 			return search->second;
 		}
+		*/
 		std::map<BasicBlock *, int> &getLatencyTable() {
 			return latencyTable;
 		}
@@ -570,7 +608,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void visitFunction(Function &F);
 		void visitBasicBlock(BasicBlock &BB);
 		void visitInstruction(Instruction &I);
-		static int get_basic_block_instance_count(BasicBlock *BB);
+		//static int get_basic_block_instance_count(BasicBlock *BB);
 
 	private:
 		// functions
@@ -680,7 +718,8 @@ class TraceGraphVertexWriter {
 			*/
 			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
 			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_start() << "</td></tr>";
-			if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
+			//if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
+			if (get_basic_block_instance_count(graph[v].basicblock) > 0) {
 				out	<< "<tr><td bgcolor=\"#FFFF33\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
 			} else {
 				out	<< "<tr><td bgcolor=\"#FFFFFF\" border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";

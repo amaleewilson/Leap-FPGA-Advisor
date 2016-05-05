@@ -192,7 +192,7 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	*outputLog << "FPGA-Advisor Analysis Pass Starting.\n";
 
 	// output results
-	raw_fd_ostream OF("fpga-advisor-analysis.out", AEC, sys::fs::F_RW);
+	raw_fd_ostream OF("fpga-advisor-analysis-result.log", AEC, sys::fs::F_RW);
 	outputFile = &OF;
 
 	mod = &M;
@@ -446,11 +446,11 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	// sic blocks in the earliest cycle that it is allowed to be executed
 	find_maximal_configuration_for_all_calls(F);
 
-	*outputLog << "Maximal basic block configuration.\n";
+	*outputLog << "Maximal basic block configuration for function: " << F->getName() << "\n";
 	print_basic_block_configuration(F, outputLog);
 
 	// print this to output file
-	*outputFile << "Maximal basic block configuration.\n";
+	*outputFile << "Maximal basic block configuration for function: " << F->getName() << "\n";
 	print_basic_block_configuration(F, outputFile);
 
 	std::cerr << "Finished computing maximal configuration\n";
@@ -470,13 +470,13 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	find_optimal_configuration_for_all_calls(F);
 
 	*outputLog << "===-------------------------------------===\n";
-	*outputLog << "Final optimal basic block configuration.\n";
+	*outputLog << "Final optimal basic block configuration for function: " << F->getName() << "\n";
 	print_basic_block_configuration(F, outputLog);
 	*outputLog << "===-------------------------------------===\n";
 
 	// print this to output file
 	*outputFile << "===-------------------------------------===\n";
-	*outputFile << "Final optimal basic block configuration.\n";
+	*outputFile << "Final optimal basic block configuration for function: " << F->getName() << "\n";
 	print_basic_block_configuration(F, outputFile);
 	*outputFile << "===-------------------------------------===\n";
 
@@ -1516,11 +1516,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 
 	print_execution_order(execOrder);
 
+	unsigned int totalNumVertices = boost::num_vertices(*graph);
 	TraceGraph_iterator vi, ve;
 	for (boost::tie(vi, ve) = boost::vertices(*graph); vi != ve; vi++) {
 		TraceGraph_vertex_descriptor self = *vi;
 		BasicBlock *selfBB = (*graph)[self].basicblock;
-		*outputLog << "Inspecting vertex (" << self << ") " << selfBB->getName() << "\n";
+		*outputLog << "Inspecting vertex (" << self << "/" << totalNumVertices << ") " << selfBB->getName() << "\n";
 
 		// staticDeps vector keeps track of basic blocks that this basic block is 
 		// dependent on
@@ -1562,18 +1563,19 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 				// need to add a dependence edge
 				TraceGraph_vertex_descriptor dynDep = execOrderVec[currExec];
 
-				bool dynamicDepExists = dynamic_memory_dependence_exists(self, dynDep, graph);
-				bool trueDepExists = DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[dynDep].basicblock, *depGraph);
-				*outputLog << "dynamicDepExists: " << dynamicDepExists << "\n";
-				*outputLog << "trueDepExists: " << trueDepExists << "\n";
-				if (!StaticDepsOnly && !dynamicDepExists && !trueDepExists) {
-					// don't add edge to node for which there are no true dependences
-					// nor any dynamic memory dependences
-					*outputLog << "Dynamic execution determined no true or memory dependences between ";
-					*outputLog << (*graph)[self].name << " (" << self << ") and " << (*graph)[dynDep].name << " (" << dynDep << ")\n";
-					continue;
+				if (!StaticDepsOnly) {
+					bool dynamicDepExists = dynamic_memory_dependence_exists(self, dynDep, graph);
+					bool trueDepExists = DependenceGraph::is_basic_block_dependence_true((*graph)[self].basicblock, (*graph)[dynDep].basicblock, *depGraph);
+					*outputLog << "dynamicDepExists: " << dynamicDepExists << "\n";
+					*outputLog << "trueDepExists: " << trueDepExists << "\n";
+					if (!dynamicDepExists && !trueDepExists) {
+						// don't add edge to node for which there are no true dependences
+						// nor any dynamic memory dependences
+						*outputLog << "Dynamic execution determined no true or memory dependences between ";
+						*outputLog << (*graph)[self].name << " (" << self << ") and " << (*graph)[dynDep].name << " (" << dynDep << ")\n";
+						continue;
+					}
 				}
-
 
 				dynamicDeps.push_back(dynDep);
 			}
@@ -1584,7 +1586,14 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 		// remove redundant dynamic dependence entries
 		// these are the dynamic dependences which another dynamic dependence is directly
 		// or indirectly dependent on
-		remove_redundant_dynamic_dependencies(graph, dynamicDeps);
+		
+		//===-----------------------------------------------------------------------===//
+		//
+		// I thought removal of these redundant dependencies would help performance
+		// it *significantly* slowed down my analysis.. I am removing it for now.
+		//
+		//===-----------------------------------------------------------------------===//
+		//remove_redundant_dynamic_dependencies(graph, dynamicDeps);
 
 		*outputLog << "Found number of dynamic dependences (after): " << dynamicDeps.size() << "\n";
 		
@@ -1632,12 +1641,18 @@ bool AdvisorAnalysis::dynamic_memory_dependence_exists(TraceGraph_vertex_descrip
 	// [2] compare parent load with child store WAR
 	// [3] compare parent store with child store WAW
 
-	*outputLog << "determine if dynamic memory dependences exist\n";
+	*outputLog << "determine if dynamic memory dependences exist between parent (" << parent << ") and child (" << child << ")\n";
 
 	std::vector<std::pair<uint64_t, uint64_t> > &pWrite = (*graph)[parent].memoryWriteTuples;
 	std::vector<std::pair<uint64_t, uint64_t> > &cWrite = (*graph)[child].memoryWriteTuples;
 	std::vector<std::pair<uint64_t, uint64_t> > &pRead = (*graph)[parent].memoryReadTuples;
 	std::vector<std::pair<uint64_t, uint64_t> > &cRead = (*graph)[child].memoryReadTuples;
+
+	*outputLog << "Parent writes: " << pWrite.size() << "\n";
+	*outputLog << "Parent reads: " << pRead.size() << "\n";
+	*outputLog << "Child writes: " << cWrite.size() << "\n";
+	*outputLog << "Child writes: " << cRead.size() << "\n";
+
 	for (auto pwit = pWrite.begin(); pwit != pWrite.end(); pwit++) {
 		for (auto cwit = cWrite.begin(); cwit != cWrite.end(); cwit++) {
 			// [3]
@@ -2463,6 +2478,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 	unsigned area = UINT_MAX;
 	//unsigned delay = UINT_MAX;
 
+	std::cerr << F->getName().str() << "\n";
 	std::cerr << "Progress bar |";
 	while (!done) {
 		ConvergenceCounter++; // for stats
@@ -2878,9 +2894,10 @@ bool AdvisorAnalysis::increment_basic_block_instance_count_and_update_transition
 	return true;
 }
 
+/*
 // Function: get_basic_block_instance_count
 // Return: the number of instances of this basic block from metadata
-int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
+static int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
 	assert(BB);
 	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
 	MDName += BB->getName().str();
@@ -2894,12 +2911,13 @@ int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
 	std::string repFactorStr = cast<MDString>(M->getOperand(0))->getString().str();
 	repFactor = stoi(repFactorStr);
 
-	//*outputLog << __func__ << " metadata: ";
+	// *outputLog << __func__ << " metadata: ";
 	//BB->getTerminator()->print(*outputLog);
-	//*outputLog << " replication factor: " << repFactor << "\n";
+	// *outputLog << " replication factor: " << repFactor << "\n";
 
 	return repFactor;
 }
+*/
 
 
 // Function: initialize_resource_table

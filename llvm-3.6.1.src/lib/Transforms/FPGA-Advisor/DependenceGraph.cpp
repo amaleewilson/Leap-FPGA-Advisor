@@ -60,7 +60,7 @@ std::error_code DEC;
 static cl::opt<bool> PrintGraph("print-dg", cl::desc("Enable printing of dependence graph in dot format"),
 		cl::Hidden, cl::init(false));
 
-static cl::opt<std::string> GraphName("dg-name", cl::desc("Dependence graph name"), cl::Hidden, cl::init("dg.dot"));
+static cl::opt<std::string> GraphName("dg-name", cl::desc("Dependence graph name"), cl::Hidden, cl::init("dg"));
 
 //===----------------------------------------------------------------------===//
 // Helper functions
@@ -74,6 +74,7 @@ static cl::opt<std::string> GraphName("dg-name", cl::desc("Dependence graph name
 bool DependenceGraph::runOnFunction(Function &F) {
 	//std::cerr << "runOnFunction: " << F.getName().str() << "\n";
 	// create output log
+	std::string fileName = "dg." + F.getName().str() + ".log";
 	raw_fd_ostream OL("dependence-graph.log", DEC, sys::fs::F_RW);
 	outputLog = &OL;
 	DEBUG(outputLog = &dbgs());
@@ -102,7 +103,8 @@ bool DependenceGraph::runOnFunction(Function &F) {
 	add_edges();
 	//boost::write_graphviz(std::cerr, DG);
 	if (PrintGraph) {
-		std::ofstream outfile(GraphName.c_str());
+		std::string graphFileName = GraphName + "." + F.getName().str() + ".dot";
+		std::ofstream outfile(graphFileName.c_str());
 		boost::write_graphviz(outfile, DG, boost::make_label_writer(&NameVec[0]));
 	}
 	return true;
@@ -355,6 +357,7 @@ bool DependenceGraph::is_basic_block_dependence_true(BasicBlock *BB1, BasicBlock
 // Function: get_all_basic_block_dependencies
 void DependenceGraph::get_all_basic_block_dependencies(DepGraph &DG, BasicBlock *BB, std::vector<BasicBlock *> &deps) {
 	DepGraph_descriptor v = get_vertex_descriptor_for_basic_block(BB, DG);
+	//DepGraph_descriptor v = ();
 	// the basic blocks that this basic block is dependent on are the targets of the out edges
 	// of vertex v
 	DepGraph_out_edge_iterator oi, oe;

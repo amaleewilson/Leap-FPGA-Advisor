@@ -118,6 +118,24 @@ void AdvisorInstr::instrument_function(Function *F) {
 void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	*outputLog << "Inserting printf call for basic block: " << BB->getName() << "\n";
 
+	//===---------------------------------------------------===//
+	// [1] stores and loads
+	// do these first since code below adds loads that we
+	// don't want to profile
+	//===---------------------------------------------------===//
+	// now insert calls to printf for memory related instructions
+	for (auto I = BB->begin(); I != BB->end(); I++) {
+		if (isa<StoreInst>(I)) {
+			instrument_store(dyn_cast<StoreInst>(I));
+		} else if (isa<LoadInst>(I)) {
+			instrument_load(dyn_cast<LoadInst>(I));
+		}
+	}
+
+
+	//===---------------------------------------------------===//
+	// [2] basic block identification
+	//===---------------------------------------------------===//
 	// insert call to printf at first insertion point
 	FunctionType *printf_type = TypeBuilder<int(char *, ...), false>::get(getGlobalContext());
 	Function *printfFunc = cast<Function>(mod->getOrInsertFunction("printf", printf_type,
@@ -135,20 +153,153 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 	printfArgs.push_back(bbMsg);
 	printfArgs.push_back(bbNameMsg);
 	printfArgs.push_back(funcNameMsg);
+	Value *bbprintf = builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	printfArgs.clear();
+
+/*
+	//===---------------------------------------------------===//
+	// [2] timer start -- don't use, not fine grained
+	//===---------------------------------------------------===//
+	// same insertion point
+	StringRef clockMsgString1 = StringRef("\nBasicBlock Clock: %ld\n");
+	Value *clockMsg1 = builder.CreateGlobalStringPtr(clockMsgString1, "clock_msg_string");
+
+	//FunctionType *clock_type = TypeBuilder<void, false>::get(getGlobalContext());
+	FunctionType *clock_type1 = FunctionType::get(Type::getInt64Ty(getGlobalContext()), false);
+	//Function *clockFunc = cast<Function>(mod->getOrInsertFunction("clock", clock_type,
+	//					AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	Function *clockFunc1 = cast<Function>(mod->getOrInsertFunction("clock", clock_type1));
+
+	Value *clock1 = builder.CreateCall(clockFunc1, llvm::Twine("clock"));
+
+	printfArgs.push_back(clockMsg1);
+	printfArgs.push_back(clock1);
+	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	printfArgs.clear();
+*/
+
+	//===---------------------------------------------------===//
+	// [3] timer start	
+	//===---------------------------------------------------===//
+	//IRBuilder<> builderTimerStart(dyn_cast<Instruction>(bbprintf));
+	std::vector<Type *> paramType;
+	paramType.clear();
+
+	std::vector<Type *> timespecTypeAR;
+	timespecTypeAR.clear();
+	timespecTypeAR.push_back(Type::getInt64Ty(getGlobalContext()));
+	timespecTypeAR.push_back(Type::getInt64Ty(getGlobalContext()));
+
+	// create a struct timespec type
+	//StructType *timespecType = StructType::get(Type::getInt64Ty(getGlobalContext()), Type::getInt64Ty(getGlobalContext()), NULL);
+	StructType *timespecType = StructType::create(makeArrayRef(timespecTypeAR));
+
+	paramType.push_back(Type::getInt32Ty(getGlobalContext()));
+	paramType.push_back(PointerType::get(timespecType, 0)); // pointer to struct
+
+	//ArrayRef<Type *> paramTypeAR = ArrayRef(paramType.begin(), paramType.end());
+	
+	//FunctionType *clock_gettime_type = FunctionType::get(Type::getVoidTy(getGlobalContext()), paramTypeAR, false);
+	FunctionType *clock_gettime_type = FunctionType::get(Type::getInt32Ty(getGlobalContext()), 
+					makeArrayRef(paramType), false);
+	Function *clock_gettimeFunc = cast<Function>(mod->getOrInsertFunction("clock_gettime", clock_gettime_type));
+
+	Value *tp = builder.CreateAlloca(timespecType, NULL, llvm::Twine("timespec"));
+
+	std::vector<Value *> clock_gettimeArgs;
+	//clock_gettimeArgs.push_back(Constant::getNullValue(Type::getInt32Ty(getGlobalContext()))); // null - CLOCK_REALTIME
+	clock_gettimeArgs.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0)); // null - CLOCK_MONOTONIC
+	clock_gettimeArgs.push_back(tp);
+
+	Value *clock_gettime = builder.CreateCall(clock_gettimeFunc, clock_gettimeArgs, llvm::Twine("clock_gettime"));
+
+	// create a print statement for the sec and nsec
+	StringRef clock_gettimeMsgString = StringRef("\nBasicBlock Clock get time start: %ld s %ld ns\n");
+	Value *clock_gettimeMsg = builder.CreateGlobalStringPtr(clock_gettimeMsgString, "clock_gettime_msg_string");
+
+	// need to create a getelementptr instruction for accessing the struct
+	std::vector<Value *> tv_secAR;
+	tv_secAR.clear();
+	tv_secAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	tv_secAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	Value *tv_secptr = builder.CreateGEP(tp, makeArrayRef(tv_secAR), "tv_sec");
+	Value *tv_sec = builder.CreateLoad(tv_secptr, llvm::Twine("load_sec"));
+
+	std::vector<Value *> tv_nsecAR;
+	tv_nsecAR.clear();
+	tv_nsecAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	tv_nsecAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 1));
+	Value *tv_nsecptr = builder.CreateGEP(tp, makeArrayRef(tv_nsecAR), "tv_nsec");
+	Value *tv_nsec = builder.CreateLoad(tv_nsecptr, llvm::Twine("load_nsec"));
+
+	printfArgs.push_back(clock_gettimeMsg);
+	printfArgs.push_back(tv_sec);
+	printfArgs.push_back(tv_nsec);
 	builder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 	printfArgs.clear();
 
-	// now insert calls to printf for memory related instructions
-	for (auto I = BB->begin(); I != BB->end(); I++) {
-		if (isa<StoreInst>(I)) {
-			instrument_store(dyn_cast<StoreInst>(I));
-		} else if (isa<LoadInst>(I)) {
-			instrument_load(dyn_cast<LoadInst>(I));
-		}
-	}
 
 	// set insertion point at end of basic block right before the terminator
-	IRBuilder<> retBuilder(BB->getTerminator());
+	IRBuilder<> endBuilder(BB->getTerminator());
+
+/*
+	//===---------------------------------------------------===//
+	// [4] timer stops -- don't use, not fine grained
+	//===---------------------------------------------------===//
+	StringRef clockMsgString2 = StringRef("\nBasicBlock Clock: %ld\n");
+	Value *clockMsg2 = endBuilder.CreateGlobalStringPtr(clockMsgString2, "clock_msg_string");
+
+	//FunctionType *clock_type = TypeBuilder<void, false>::get(getGlobalContext());
+	FunctionType *clock_type2 = FunctionType::get(Type::getInt64Ty(getGlobalContext()), false);
+	//Function *clockFunc = cast<Function>(mod->getOrInsertFunction("clock", clock_type,
+	//					AttributeSet().addAttribute(mod->getContext(), 1U, Attribute::NoAlias)));
+	Function *clockFunc2 = cast<Function>(mod->getOrInsertFunction("clock", clock_type2));
+
+	Value *clock2 = endBuilder.CreateCall(clockFunc2, llvm::Twine("clock"));
+
+	printfArgs.push_back(clockMsg2);
+	printfArgs.push_back(clock2);
+	endBuilder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	printfArgs.clear();
+*/
+	//===---------------------------------------------------===//
+	// [4] timer stops
+	//===---------------------------------------------------===//
+	Value *tp2 = endBuilder.CreateAlloca(timespecType, NULL, llvm::Twine("timespec"));
+
+	std::vector<Value *> clock_gettimeArgs2;
+	clock_gettimeArgs2.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0)); // null - CLOCK_MONOTONIC
+	clock_gettimeArgs2.push_back(tp2);
+	Value *clock_gettime2 = endBuilder.CreateCall(clock_gettimeFunc, clock_gettimeArgs2, llvm::Twine("clock_gettime"));
+
+	// create a print statement for the sec and nsec
+	//StringRef clock_gettimeMsgString = StringRef("\nBasicBlock Clock get time: %ld s %ld ns\n");
+	//Value *clock_gettimeMsg2 = builder.CreateGlobalStringPtr(clock_gettimeMsgString, "clock_gettime_msg_string");
+	StringRef clock_gettimeMsgString2 = StringRef("\nBasicBlock Clock get time stop: %ld s %ld ns\n");
+	Value *clock_gettimeMsg2 = endBuilder.CreateGlobalStringPtr(clock_gettimeMsgString2, "clock_gettime_msg_string2");
+
+	// need to create a getelementptr instruction for accessing the struct
+	tv_secAR.clear();
+	tv_secAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	tv_secAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	Value *tv_secptr2 = endBuilder.CreateGEP(tp2, makeArrayRef(tv_secAR), "tv_sec");
+	Value *tv_sec2 = endBuilder.CreateLoad(tv_secptr2, llvm::Twine("load_sec"));
+
+	tv_nsecAR.clear();
+	tv_nsecAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 0));
+	tv_nsecAR.push_back(ConstantInt::get(Type::getInt32Ty(getGlobalContext()), 1));
+	Value *tv_nsecptr2 = endBuilder.CreateGEP(tp2, makeArrayRef(tv_nsecAR), "tv_nsec");
+	Value *tv_nsec2 = endBuilder.CreateLoad(tv_nsecptr2, llvm::Twine("load_nsec"));
+
+	printfArgs.push_back(clock_gettimeMsg2);
+	printfArgs.push_back(tv_sec2);
+	printfArgs.push_back(tv_nsec2);
+	endBuilder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+	printfArgs.clear();
+
+	//===---------------------------------------------------===//
+	// [5] return
+	//===---------------------------------------------------===//
 	// if this basicblock returns from a function, print that message
 	if (isa<ReturnInst>(BB->getTerminator())) {
 		*outputLog << "Inserting printf call for return: ";
@@ -156,13 +307,14 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 		*outputLog << "\n";
 
 		StringRef retMsgString = StringRef("\nReturn from: %s\n");
-		Value *retMsg = retBuilder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
+		Value *retMsg = endBuilder.CreateGlobalStringPtr(retMsgString, "ret_msg_string");
 
 		printfArgs.push_back(retMsg);
 		printfArgs.push_back(funcNameMsg);
-		retBuilder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
+		endBuilder.CreateCall(printfFunc, printfArgs, llvm::Twine("printf"));
 		printfArgs.clear();
 	}
+
 }
 
 // Function: instrument_load
