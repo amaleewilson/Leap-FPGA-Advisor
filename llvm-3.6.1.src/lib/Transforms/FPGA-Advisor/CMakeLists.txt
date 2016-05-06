@@ -20,9 +20,11 @@ endif()
 message("boost: ${Boost_INCLUDE_DIRS}")
 
 add_llvm_loadable_module( LLVMFPGA-Advisor
-  Scheduler.cpp
   DependenceGraph.cpp
   FPGA-Advisor-Instrument.cpp
   FPGA-Advisor-Analysis.cpp
   )
 
+if (TARGET intrinsics_gen)
+  add_dependencies(LLVMFPGA-Advisor intrinsics_gen)
+endif()
