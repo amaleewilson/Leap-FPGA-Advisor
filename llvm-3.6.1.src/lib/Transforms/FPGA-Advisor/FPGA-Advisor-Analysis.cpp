@@ -123,6 +123,7 @@ std::map<BasicBlock *, int> *LT;
 // area table
 std::map<BasicBlock *, int> *AT;
 int cpuCycle;
+std::vector<std::pair<long int, long int> > startTimes;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -1026,6 +1027,16 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				*outputLog << "process load: FAILED.\n";
 				return false;
 			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time start: )(.*)( s )(.*)( ns)"))) {
+			if (!process_time(line, &latestFunction, lastVertex, true)) {
+				*outputLog << "process time start: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time stop: )(.*)( s )(.*)( ns)"))) {
+			if (!process_time(line, &latestFunction, lastVertex, false)) {
+				*outputLog << "process time stop: FAILED.\n";
+				return false;
+			}
 		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
 			if (!process_function_return(line, &latestFunction, funcStack, latestTraceGraph, lastVertex, latestExecutionOrder)) {
 				*outputLog << "process function return: FAILED.\n";
@@ -1034,6 +1045,49 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 		} else {
 			// ignore, probably program output
 		}
+	}
+	return true;
+}
+
+
+// process one line of trace containing a time start or stop
+bool AdvisorAnalysis::process_time(const std::string &line, Function **function, TraceGraph_vertex_descriptor &lastVertex, bool start) {
+	*outputLog << __func__ << " " << line << "\n";
+	const char *delimiter = " ";
+
+	// get the time value
+	// make a non-const copy of the line
+	std::vector<char> lineCopy(line.begin(), line.end());
+	lineCopy.push_back(0);
+
+	// separate line by space to get keywords
+	//=---------------------------------=//
+	char *pch;
+	if (start) {
+		// BasicBlock<space>Clock<space>get<space>time<space>start:<space>seconds<space>s<space>nseconds<space>ns\n
+		pch = std::strtok(&lineCopy[33], delimiter);
+	} else {
+		// BasicBlock<space>Clock<space>get<space>time<space>stop:<space>seconds<space>s<space>nseconds<space>ns\n
+		pch = std::strtok(&lineCopy[32], delimiter);
+	}
+	std::string secondString(pch);
+	pch = strtok(NULL, delimiter);
+	// s
+	pch = strtok(NULL, delimiter);
+	std::string nanosecondString(pch);
+	//=---------------------------------=//
+
+	// convert the string to long int
+	long int second = std::strtol(secondString.c_str(), NULL, 0);
+	long int nanosecond = std::strtol(nanosecondString.c_str(), NULL, 0);
+
+	if (start) {
+		*outputLog << "Start time : " << second << " s " << nanosecond << " ns\n";
+		// store the starts in stack, pop stack when stop is encountered
+		startTimes.push_back(std::make_pair(second, nanosecond));
+	} else {
+		*outputLog << "Stop time : " << second << " s " << nanosecond << " ns\n";
+		// update the timer
 	}
 	return true;
 }

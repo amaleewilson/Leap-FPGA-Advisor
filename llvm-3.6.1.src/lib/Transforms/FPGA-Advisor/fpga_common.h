@@ -628,6 +628,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void print_statistics();
 
 		bool get_program_trace(std::string fileIn);
+		bool process_time(const std::string &line, Function **function, TraceGraph_vertex_descriptor &lastVertex, bool start);
 		bool process_function_return(const std::string &line, Function **function, std::stack<FunctionExecutionRecord> &stack, TraceGraphList_iterator &lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator &lastExecutionOrder);
 		bool process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
 		bool process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);

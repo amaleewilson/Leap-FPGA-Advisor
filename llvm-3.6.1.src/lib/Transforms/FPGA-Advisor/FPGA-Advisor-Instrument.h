@@ -68,6 +68,7 @@ class AdvisorInstr : public ModulePass {
 		void instrument_basic_block(BasicBlock *BB);
 		void instrument_store(StoreInst *SI);
 		void instrument_load(LoadInst *LI);
+		void instrument_timer_for_call(Instruction *I);
 		uint64_t get_store_size_in_bytes(StoreInst *SI);
 		uint64_t get_load_size_in_bytes(LoadInst *LI);
 		//std::string get_value_as_string(const Value *value);
