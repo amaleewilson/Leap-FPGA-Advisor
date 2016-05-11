@@ -58,7 +58,7 @@ LINK=$(LLVM_BUILD)llvm-link
 # set opt related flags
 #COMPILE_OPT_FLAG=
 OPT_LD_FLAG= -load=$(LLVM_BUILD_HOME)lib/LLVMFPGA-Advisor.so 
-OPT_FLAGS= -custom-aa 
+OPT_FLAGS= -O1 -custom-aa 
 TRACE_LOG?= trace.log
 
 #ifdef($(PRINT_DEPGRAPH))
