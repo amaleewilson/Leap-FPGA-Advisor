@@ -207,6 +207,7 @@ typedef struct {
 		// cycStart and cycEnd are the actual schedules
 		int mutable cycStart;
 		int mutable cycEnd;
+		unsigned long long cpuCycles;
 		std::string name;
 		// a memory access tuple for each store/load
 		// first field stores the starting address, second field stores the width of access in bytes
@@ -254,6 +255,7 @@ typedef ExecutionOrder::iterator ExecutionOrder_iterator;
 typedef ExecutionOrderList::iterator ExecutionOrderList_iterator;
 typedef ExecutionOrderListMap::iterator ExecutionOrderListMap_iterator;
 
+
 class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionScheduler> {
 	public:
 		static char ID;
@@ -292,8 +294,8 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			return search->second;
 		}
 		*/
-		std::map<BasicBlock *, int> &getLatencyTable() {
-			return latencyTable;
+		std::map<BasicBlock *, int> &getFPGALatencyTable() {
+			return latencyTableFPGA;
 		}
 	
 		void visitBasicBlock(BasicBlock &BB) {
@@ -302,10 +304,10 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			for (auto I = BB.begin(); I != BB.end(); I++) {
 				latency++;
 			}
-			latencyTable.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
+			latencyTableFPGA.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
 		}
 	
-		std::map<BasicBlock *, int> latencyTable;
+		std::map<BasicBlock *, int> latencyTableFPGA;
 	
 }; // end class FunctionScheduler
 
@@ -628,12 +630,13 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void print_statistics();
 
 		bool get_program_trace(std::string fileIn);
-		bool process_time(const std::string &line, Function **function, TraceGraph_vertex_descriptor &lastVertex, bool start);
+		bool process_time(const std::string &line, Function **function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, bool start);
 		bool process_function_return(const std::string &line, Function **function, std::stack<FunctionExecutionRecord> &stack, TraceGraphList_iterator &lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator &lastExecutionOrder);
 		bool process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
 		bool process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
 		bool process_basic_block_entry(const std::string &line, int &ID, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder);
 		bool process_function_entry(const std::string &line, Function **function, TraceGraphList_iterator &latestTraceGraph, TraceGraph_vertex_descriptor &latestVertex, ExecutionOrderList_iterator &latestExecutinoOrder, std::stack<FunctionExecutionRecord> &stack);
+		void getCPULatencyTable(Function *F, std::map<BasicBlock *, int> *LT, ExecutionOrderList &executionOrderList, TraceGraphList &executionGraphList);
 
 		bool check_trace_sanity();
 		BasicBlock *find_basicblock_by_name(std::string funcName, std::string bbName);

@@ -40,6 +40,10 @@ LLVM_HOME=$(LEVEL)../../../
 LLVM_BUILD_HOME=$(LLVM_HOME)llvm-build/
 LLVM_BUILD=$(LLVM_BUILD_HOME)bin/
 LLVM_SRC_HOME=$(LLVM_HOME)llvm-3.6.1.src/
+LLVM_EXAMPLES=$(LLVM_SRC_HOME)examples/
+
+# rdtsc.ll for linking with get_rdtsc()
+RDTSC_FILE=$(LLVM_EXAMPLES)FPGA-Advisor/common/rdtsc.ll
 
 # set to -debug to output debug messages in opt
 #DEBUG= -debug
@@ -49,10 +53,12 @@ CLANG=clang
 OPT=$(LLVM_BUILD)opt
 DIS=$(LLVM_BUILD)llvm-dis
 LLI=$(LLVM_BUILD)lli
+LINK=$(LLVM_BUILD)llvm-link
 
 # set opt related flags
+#COMPILE_OPT_FLAG=
 OPT_LD_FLAG= -load=$(LLVM_BUILD_HOME)lib/LLVMFPGA-Advisor.so 
-OPT_FLAGS= -O1 -custom-aa 
+OPT_FLAGS= -custom-aa 
 TRACE_LOG?= trace.log
 
 #ifdef($(PRINT_DEPGRAPH))
@@ -72,30 +78,37 @@ PDF_FILES=$(patsubst %.dot, %.pdf, $(DOT_FILES))
 
 # full flow
 all:
-	make compile
-	make instrument
-	make analysis
+	make c
+	make i
+	make ana
 
 # compile does the frontend compilation of the program and llvm optimization
-compile: $(NAME).$(EXT)
+c: $(NAME).$(EXT)
 	@echo "Running compilation stage..."
 	$(CLANG) -S -emit-llvm $(NAME).$(EXT) -o $(NAME).ll
-	$(OPT) $(OPT_FLAGS) $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
+	$(OPT) $(OPT_FLAGS) $(COMPILE_OPT_FLAGS) $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
 	$(DIS) $(NAME).opt.bc
 
 # instrumentation stage and run instrumented code
 # we may need to deal with code that doesn't finish...
-instrument: $(NAME).opt.bc
+i: $(NAME).opt.bc
 	@echo "Running instrumentation stage..."
 	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -fpga-advisor-instrument < $(NAME).opt.bc > $(NAME).opt.inst.bc
 	$(DIS) $(NAME).opt.inst.bc
-	$(LLI) $(NAME).opt.inst.bc > $(TRACE_LOG)
+	$(LINK) $(NAME).opt.inst.bc $(RDTSC_FILE) -o $(NAME).opt.inst.linked.bc
+	$(DIS) $(NAME).opt.inst.linked.bc
+	$(LLI) $(NAME).opt.inst.linked.bc > $(TRACE_LOG)
 
 # fpga advisor analysis
-analysis: $(NAME).opt.bc $(TRACE_LOG)
+ana: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
-	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
+	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
+
+# generate static dependence graph
+depgraph: $(NAME).opt.bc
+	@echo "Creating static dependence graphs"
+	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -depgraph -print-dg < $(NAME).opt.bc > /dev/null
 
 # generate call graph for program
 call-graph:
@@ -103,7 +116,7 @@ call-graph:
 	# outputs callgraph.dot
 
 # convert all .dot to .pdf
-convert-graph: $(PDF_FILES)
+graph: $(PDF_FILES)
 
 # convert .dot to .pdf
 %.pdf: %.dot
@@ -117,5 +130,5 @@ clean:
 # total clean up
 cleanall:
 	@echo "Removing all outputs"
-	clean
+	make clean
 	rm -rf *.pdf

@@ -184,7 +184,6 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 			if (calledFunc->isDeclaration()) {
 				continue;
 			}
-			//instrument_timer_for_call(I);
 			instrument_rdtsc_for_call(I);
 		}
 	}

@@ -118,12 +118,13 @@ std::error_code AEC;
 MemoryDependenceAnalysis *MDA;
 DominatorTree *DT;
 DepGraph *depGraph;
-// latency table
-std::map<BasicBlock *, int> *LT;
+// latency tables
+std::map<BasicBlock *, int> *LTFPGA; // filled in by FunctionScheduler - simple visitation of instructions
+std::map<BasicBlock *, int> *LTCPU; // filled in after getting dynamic trace
 // area table
 std::map<BasicBlock *, int> *AT;
 int cpuCycle;
-std::vector<std::pair<long int, long int> > startTimes;
+std::vector<unsigned long long> startTimes;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -433,9 +434,19 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 		*outputLog << "Did not find execution of function in program trace. Skipping.\n";
 		return false;
 	}
+	
+	// make sure execution was recorded in execution order
+	if (executionOrderListMap.find(F) == executionOrderListMap.end()) {
+		*outputLog << "Did not find execution of function in execution order. Error.\n";
+		assert(0);
+	}
 
-	LT = &getAnalysis<FunctionScheduler>(*F).getLatencyTable();
+	LTFPGA = &getAnalysis<FunctionScheduler>(*F).getFPGALatencyTable();
 	AT = &getAnalysis<FunctionAreaEstimator>(*F).getAreaTable();
+	// fill in latency table for cpu by traversing execution graph
+	LTCPU = new std::map<BasicBlock *, int>;
+	LTCPU->clear(); // clear before filling for this function
+	getCPULatencyTable(F, LTCPU, executionOrderListMap[F], executionGraph[F]);
 
 	// get the dependence graph for the function
 	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
@@ -485,6 +496,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 		print_optimal_configuration_for_all_calls(F);
 	}
 
+	delete LTCPU;
 	return true;
 }
 
@@ -777,6 +789,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			currGraph[currVertex].minCycStart = -1;
 			currGraph[currVertex].minCycEnd = -1;
 			currGraph[currVertex].name = BB->getName().str();
+			currGraph[currVertex].cpuCycles = 0;
 			currGraph[currVertex].memoryWriteTuples.clear();
 			currGraph[currVertex].memoryReadTuples.clear();
 			/*
@@ -1027,13 +1040,13 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				*outputLog << "process load: FAILED.\n";
 				return false;
 			}
-		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time start: )(.*)( s )(.*)( ns)"))) {
-			if (!process_time(line, &latestFunction, lastVertex, true)) {
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time start: )(.*)"))) {
+			if (!process_time(line, &latestFunction, latestTraceGraph, lastVertex, true)) {
 				*outputLog << "process time start: FAILED.\n";
 				return false;
 			}
-		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time stop: )(.*)( s )(.*)( ns)"))) {
-			if (!process_time(line, &latestFunction, lastVertex, false)) {
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time stop: )(.*)"))) {
+			if (!process_time(line, &latestFunction, latestTraceGraph, lastVertex, false)) {
 				*outputLog << "process time stop: FAILED.\n";
 				return false;
 			}
@@ -1051,7 +1064,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 
 // process one line of trace containing a time start or stop
-bool AdvisorAnalysis::process_time(const std::string &line, Function **function, TraceGraph_vertex_descriptor &lastVertex, bool start) {
+bool AdvisorAnalysis::process_time(const std::string &line, Function **function, TraceGraphList_iterator latestTraceGraph, TraceGraph_vertex_descriptor &lastVertex, bool start) {
 	*outputLog << __func__ << " " << line << "\n";
 	const char *delimiter = " ";
 
@@ -1064,30 +1077,29 @@ bool AdvisorAnalysis::process_time(const std::string &line, Function **function,
 	//=---------------------------------=//
 	char *pch;
 	if (start) {
-		// BasicBlock<space>Clock<space>get<space>time<space>start:<space>seconds<space>s<space>nseconds<space>ns\n
+		// BasicBlock<space>Clock<space>get<space>time<space>start:<space>cycles\n
 		pch = std::strtok(&lineCopy[33], delimiter);
 	} else {
-		// BasicBlock<space>Clock<space>get<space>time<space>stop:<space>seconds<space>s<space>nseconds<space>ns\n
+		// BasicBlock<space>Clock<space>get<space>time<space>stop:<space>cycles\n
 		pch = std::strtok(&lineCopy[32], delimiter);
 	}
-	std::string secondString(pch);
-	pch = strtok(NULL, delimiter);
-	// s
-	pch = strtok(NULL, delimiter);
-	std::string nanosecondString(pch);
+	std::string cycleString(pch);
 	//=---------------------------------=//
 
 	// convert the string to long int
-	long int second = std::strtol(secondString.c_str(), NULL, 0);
-	long int nanosecond = std::strtol(nanosecondString.c_str(), NULL, 0);
+	unsigned long long cycle = std::strtol(cycleString.c_str(), NULL, 0);
 
 	if (start) {
-		*outputLog << "Start time : " << second << " s " << nanosecond << " ns\n";
+		*outputLog << "Start time : " << cycle << " cycles\n";
 		// store the starts in stack, pop stack when stop is encountered
-		startTimes.push_back(std::make_pair(second, nanosecond));
+		startTimes.push_back(cycle);
 	} else {
-		*outputLog << "Stop time : " << second << " s " << nanosecond << " ns\n";
+		*outputLog << "Stop time : " << cycle << " cycles\n";
 		// update the timer
+		unsigned long long startTime = startTimes.back();
+		startTimes.pop_back();
+		
+		(*latestTraceGraph)[lastVertex].cpuCycles = (cycle - startTime);
 	}
 	return true;
 }
@@ -1418,6 +1430,63 @@ bool AdvisorAnalysis::process_function_entry(const std::string &line, Function *
 	//==----------------------------------------------------------------==//
 	return true;
 }
+
+
+void AdvisorAnalysis::getCPULatencyTable(Function *F, std::map<BasicBlock *, int> *LT, ExecutionOrderList &executionOrderList, TraceGraphList &executionGraphList) {
+	*outputLog << __func__ << " for function: " << F->getName() << "\n";
+	// traverse through each execution order
+	ExecutionOrderList_iterator eol;
+	TraceGraphList_iterator tgl;
+	/*
+	for (eol = executionOrderList.begin(), tgl = executionGraphList.begin();
+			eol != executionOrderList.end() && tgl != executionOrderList.end(); eol++, tgl++) {
+		// traverse through each basic block entry in the current execution order
+		ExecutionOrder_iterator eo;
+		for (eo = eol->begin(); eo != eol->end(); eo++) {
+			BasicBlock *BB = eo->first;
+			// look at each instance of execution of this basic block
+			for (auto inst = eo->second.begin(); inst != eo->second.end(); inst++) {
+				
+			}
+		}
+	}
+	*/
+
+	// compute for each basic block across each execution
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
+		int iterCount = 0;
+		float avgLatency = 0;
+		for (eol = (executionOrderList).begin(), tgl = (executionGraphList).begin();
+			eol != (executionOrderList).end() && tgl != (executionGraphList).end(); eol++, tgl++) {
+			auto search = (*eol).find(BB);
+			if (search == (*eol).end()) {
+				// this basic block did not execute in this function call
+				continue;
+			}
+			// average of all cpu executions of this basic block
+			for (unsigned int i = 0; i < search->second.second.size(); i++) {
+				int newElem = (*tgl)[ search->second.second[i] ].cpuCycles;
+				avgLatency = ((avgLatency * (float)iterCount) + (float)newElem)/(float)(iterCount + 1);
+				iterCount++;
+			}
+		}
+		// insert the entry
+
+		// if basic block didn't exist, latency is just 0 ??
+		// truncate to int
+		int latency = (int) avgLatency;
+		if (latency == 0) {
+			latency++; // must be due to truncation
+		}
+		
+		*outputLog << "Average Latency for basic block: " << BB->getName() << " " << latency << "\n";
+
+		LT->insert(std::make_pair(BB, latency));
+	}
+
+	*outputLog << "done\n";
+}
+
 
 /*
 // TODO TODO TODO TODO TODO remember to check for external functions, I know
@@ -2315,7 +2384,7 @@ bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_ite
 	// that is *reachable* from a starting node
 	// also, since there are no resource constraints, each basic block
 	// will be scheduled as early as possible, so no need for bfs here
-	ScheduleVisitor vis(graph, *LT, lastCycle);
+	ScheduleVisitor vis(graph, *LTFPGA, lastCycle);
 	boost::depth_first_search(*graph, boost::visitor(vis));
 
 
@@ -2545,6 +2614,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			int deltaDelay = INT_MAX;
 			incremental_gradient_descent(F, removeBB, deltaDelay);
 			//decrement_basic_block_instance_count(removeBB);
+			*outputLog << "[step] Remove basic block: " << removeBB->getName() << "\n";
 			decrement_basic_block_instance_count_and_update_transition(removeBB);
 
 			// printout
@@ -2563,6 +2633,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			// only remove block if it doesn't negatively impact delay
 			if (deltaDelay >= 0 && removeBB != NULL) {
 				//decrement_basic_block_instance_count(removeBB);
+				*outputLog << "[step+] Remove basic block: " << removeBB->getName() << "\n";
 				decrement_basic_block_instance_count_and_update_transition(removeBB);
 			}
 
@@ -2838,7 +2909,7 @@ unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	//===----------------------------------------------------===//
 	for (std::vector<TraceGraph_vertex_descriptor>::iterator rV = roots.begin();
 			rV != roots.end(); rV++) {
-		ConstrainedScheduleVisitor vis(graph_it, *LT/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
+		ConstrainedScheduleVisitor vis(graph_it, *LTFPGA/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
 		boost::breadth_first_search(graph, vertex(0, graph), boost::visitor(vis).root_vertex(*rV));
 		//boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
 	}
