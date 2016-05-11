@@ -630,11 +630,11 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void print_statistics();
 
 		bool get_program_trace(std::string fileIn);
-		bool process_time(const std::string &line, Function **function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, bool start);
+		bool process_time(const std::string &line, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex, bool start);
 		bool process_function_return(const std::string &line, Function **function, std::stack<FunctionExecutionRecord> &stack, TraceGraphList_iterator &lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator &lastExecutionOrder);
-		bool process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
-		bool process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex);
-		bool process_basic_block_entry(const std::string &line, int &ID, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder);
+		bool process_load(const std::string &line, Function *function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex);
+		bool process_store(const std::string &line, Function *function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex);
+		bool process_basic_block_entry(const std::string &line, int &ID, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder);
 		bool process_function_entry(const std::string &line, Function **function, TraceGraphList_iterator &latestTraceGraph, TraceGraph_vertex_descriptor &latestVertex, ExecutionOrderList_iterator &latestExecutinoOrder, std::stack<FunctionExecutionRecord> &stack);
 		void getCPULatencyTable(Function *F, std::map<BasicBlock *, int> *LT, ExecutionOrderList &executionOrderList, TraceGraphList &executionGraphList);
 

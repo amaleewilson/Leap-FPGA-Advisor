@@ -124,7 +124,7 @@ std::map<BasicBlock *, int> *LTCPU; // filled in after getting dynamic trace
 // area table
 std::map<BasicBlock *, int> *AT;
 int cpuCycle;
-std::vector<unsigned long long> startTimes;
+std::vector<unsigned long long> startTime;
 
 //===----------------------------------------------------------------------===//
 // Advisor Analysis Pass options
@@ -1014,6 +1014,8 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 		}
 
 		*outputLog << "PROCESSING LINE: " << line << " (" << lineNum++ << ")\n";
+		//*outputLog << "latestTraceGraph iterator: " << latestTraceGraph << "\n";
+		*outputLog << "lastVertex: " << lastVertex << "\n";
 		// There are 5 types of messages:
 		// 1. Enter Function: <func name>
 		// 2. Basic Block: <basic block name> Function: <func name>
@@ -1026,27 +1028,27 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
-			if (!process_basic_block_entry(line, ID, lastVertex, latestExecutionOrder)) {
+			if (!process_basic_block_entry(line, ID, latestTraceGraph, lastVertex, latestExecutionOrder)) {
 				*outputLog << "process basic block entry: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(Store at address: )(.*)( size in bytes: )(.*)") )) {
-			if (!process_store(line, latestFunction, lastVertex)) {
+			if (!process_store(line, latestFunction, latestTraceGraph, lastVertex)) {
 				*outputLog << "process store: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
-			if (!process_load(line, latestFunction, lastVertex)) {
+			if (!process_load(line, latestFunction, latestTraceGraph, lastVertex)) {
 				*outputLog << "process load: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time start: )(.*)"))) {
-			if (!process_time(line, &latestFunction, latestTraceGraph, lastVertex, true)) {
+			if (!process_time(line, latestTraceGraph, lastVertex, true)) {
 				*outputLog << "process time start: FAILED.\n";
 				return false;
 			}
 		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time stop: )(.*)"))) {
-			if (!process_time(line, &latestFunction, latestTraceGraph, lastVertex, false)) {
+			if (!process_time(line, latestTraceGraph, lastVertex, false)) {
 				*outputLog << "process time stop: FAILED.\n";
 				return false;
 			}
@@ -1064,7 +1066,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 
 
 // process one line of trace containing a time start or stop
-bool AdvisorAnalysis::process_time(const std::string &line, Function **function, TraceGraphList_iterator latestTraceGraph, TraceGraph_vertex_descriptor &lastVertex, bool start) {
+bool AdvisorAnalysis::process_time(const std::string &line, TraceGraphList_iterator latestTraceGraph, TraceGraph_vertex_descriptor lastVertex, bool start) {
 	*outputLog << __func__ << " " << line << "\n";
 	const char *delimiter = " ";
 
@@ -1092,15 +1094,22 @@ bool AdvisorAnalysis::process_time(const std::string &line, Function **function,
 	if (start) {
 		*outputLog << "Start time : " << cycle << " cycles\n";
 		// store the starts in stack, pop stack when stop is encountered
-		startTimes.push_back(cycle);
+		assert(startTime.empty());
+		startTime.push_back(cycle);
 	} else {
 		*outputLog << "Stop time : " << cycle << " cycles\n";
 		// update the timer
-		unsigned long long startTime = startTimes.back();
-		startTimes.pop_back();
+		unsigned long long start = startTime.back();
+		assert(startTime.size() == 1); // size must be one!!
+		startTime.pop_back();
 		
-		(*latestTraceGraph)[lastVertex].cpuCycles = (cycle - startTime);
+		// update the graph
+		(*latestTraceGraph)[lastVertex].cpuCycles = (cycle - start);
 	}
+	*outputLog << "hfhfhf\n";
+	*outputLog << (*latestTraceGraph)[lastVertex].name << "\n";
+
+	*outputLog << "asaasasasas\n";
 	return true;
 }
 
@@ -1149,7 +1158,7 @@ bool AdvisorAnalysis::process_function_return(const std::string &line, Function 
 
 
 // process one line of trace containing load
-bool AdvisorAnalysis::process_load(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex) {
+bool AdvisorAnalysis::process_load(const std::string &line, Function *function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex) {
 	*outputLog << __func__ << " " << line << "\n";
 	const char *delimiter = " ";
 
@@ -1180,7 +1189,8 @@ bool AdvisorAnalysis::process_load(const std::string &line, Function *function, 
 	*outputLog << "Discovered a load with starting address : " << addrStart << "\n";
 	*outputLog << "Load width in bytes : " << width << "\n";
 
-	TraceGraph &latestGraph = executionGraph[function].back();
+	//TraceGraph &latestGraph = executionGraph[function].back();
+	TraceGraph &latestGraph = *lastTraceGraph;
 	//std::pair<uint64_t, uint64_t> addrWidthTuple = std::make_pair(addrStart, width);
 	*outputLog << "after pair\n";
 	try {
@@ -1199,7 +1209,7 @@ bool AdvisorAnalysis::process_load(const std::string &line, Function *function, 
 
 
 // process one line of trace containing store
-bool AdvisorAnalysis::process_store(const std::string &line, Function *function, TraceGraph_vertex_descriptor lastVertex) {
+bool AdvisorAnalysis::process_store(const std::string &line, Function *function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex) {
 	*outputLog << __func__ << " " << line << "\n";
 	const char *delimiter = " ";
 
@@ -1230,7 +1240,8 @@ bool AdvisorAnalysis::process_store(const std::string &line, Function *function,
 	*outputLog << "Discovered a store with starting address : " << addrStart << "\n";
 	*outputLog << "Store width in bytes : " << width << "\n";
 
-	TraceGraph &latestGraph = executionGraph[function].back();
+	//TraceGraph &latestGraph = executionGraph[function].back();
+	TraceGraph &latestGraph = *lastTraceGraph;
 	try {
 		latestGraph[lastVertex].memoryWriteTuples.push_back(std::make_pair(addrStart, width));
 	} catch (std::exception &e) {
@@ -1243,7 +1254,7 @@ bool AdvisorAnalysis::process_store(const std::string &line, Function *function,
 
 
 // process one line of trace containing basic block entry
-bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder) {
+bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder) {
 	*outputLog << __func__ << " " << line << "\n";
 	const char *delimiter = " ";
 
@@ -1275,6 +1286,8 @@ bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID
 		return false;
 	}
 
+	*outputLog << "SOMETHING\n";
+
 	if (isa<TerminatorInst>(BB->getFirstNonPHI())) {
 		// if the basic block only contains a branch/control flow and no computation
 		// then skip it, do not add to graph
@@ -1283,13 +1296,18 @@ bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID
 		return true;
 	}
 
+	*outputLog << "~~~~~~~~~\n";
+
 	//==----------------------------------------------------------------==//
-	TraceGraph::vertex_descriptor currVertex = boost::add_vertex(executionGraph[BB->getParent()].back());
-	TraceGraph &currGraph = executionGraph[BB->getParent()].back();
+	//TraceGraph::vertex_descriptor currVertex = boost::add_vertex(executionGraph[BB->getParent()].back());
+	//TraceGraph &currGraph = executionGraph[BB->getParent()].back();
+	TraceGraph::vertex_descriptor currVertex = boost::add_vertex(*lastTraceGraph);
+	TraceGraph &currGraph = *lastTraceGraph;
 	currGraph[currVertex].basicblock = BB;
 	currGraph[currVertex].ID = ID;
 	currGraph[currVertex].minCycStart = -1;
 	currGraph[currVertex].minCycEnd = -1;
+	currGraph[currVertex].cpuCycles = 0;
 	currGraph[currVertex].name = BB->getName().str();
 	currGraph[currVertex].memoryWriteTuples.clear();
 	currGraph[currVertex].memoryReadTuples.clear();
@@ -1325,6 +1343,10 @@ bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID
 
 	// set the latest added vertex
 	lastVertex = currVertex;
+
+	*outputLog << "lululululu\n";
+	*outputLog << (*lastTraceGraph)[lastVertex].name << "\n";
+	*outputLog << "huhuhuhuhu\n";
 
 	return true;
 }
@@ -1383,9 +1405,11 @@ bool AdvisorAnalysis::process_function_entry(const std::string &line, Function *
 		TraceGraph newGraph;
 		try {
 			executionGraph[F].push_back(newGraph);
+			*outputLog << __func__ << " size of list: " << executionGraph[F].size() << "\n";
 			// update the latest trace graph created
 			latestTraceGraph = executionGraph[F].end();
 			latestTraceGraph--; // go to the last element in list
+			assert(latestTraceGraph == executionGraph[F].begin());
 		} catch (std::exception &e) {
 			std::cerr << "An error occured." << e.what() << "\n";
 		}

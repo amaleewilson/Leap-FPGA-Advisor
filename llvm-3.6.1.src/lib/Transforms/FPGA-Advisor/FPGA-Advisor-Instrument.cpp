@@ -151,6 +151,12 @@ void AdvisorInstr::instrument_function(Function *F) {
 // stating that it is returning from function
 // e.g.) Returning from: func
 void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
+	if (isa<TerminatorInst>(BB->getFirstNonPHI())) {
+		// skip instrumentation because we don't care about this block
+		// no data dependencies, only control
+		return;
+	}
+
 	*outputLog << "Inserting printf call for basic block: " << BB->getName() << "\n";
 
 	instrument_rdtsc_before_instruction(BB->getFirstNonPHI(), true);
