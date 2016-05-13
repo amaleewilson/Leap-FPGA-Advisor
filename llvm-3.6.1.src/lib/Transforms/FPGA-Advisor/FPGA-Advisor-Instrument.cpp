@@ -151,7 +151,7 @@ void AdvisorInstr::instrument_function(Function *F) {
 // stating that it is returning from function
 // e.g.) Returning from: func
 void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
-	if (isa<TerminatorInst>(BB->getFirstNonPHI())) {
+	if (isa<TerminatorInst>(BB->getFirstNonPHI()) && !isa<ReturnInst>(BB->getFirstNonPHI())) {
 		// skip instrumentation because we don't care about this block
 		// no data dependencies, only control
 		return;
