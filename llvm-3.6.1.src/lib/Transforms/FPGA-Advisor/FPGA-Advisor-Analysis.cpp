@@ -449,7 +449,12 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	getCPULatencyTable(F, LTCPU, executionOrderListMap[F], executionGraph[F]);
 
 	// get the dependence graph for the function
-	depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
+	//depGraph = &getAnalysis<DependenceGraph>(*F).getDepGraph();
+	std::string dgFileName = "dg." + F->getName().str() + ".log";
+	if (!get_dependence_graph_from_file(dgFileName, &depGraph, F->getName().str())) {
+		std::cerr << "Could not get the dependence graph! Error opening file " << dgFileName << "\n";
+		assert(0);
+	}
 
 	// for each execution of the function found in the trace
 	// we want to find the optimal tiling for the basicblocks
@@ -1282,7 +1287,7 @@ bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID
 	BasicBlock *BB = find_basicblock_by_name(funcString, bbString);
 	if (!BB) {
 		// could not find the basic block by name
-		errs() << "Could not find the basic block from trace in program!\n";
+		errs() << "Could not find the basic block from trace in program! " << bbString << "\n";
 		return false;
 	}
 
@@ -1386,7 +1391,7 @@ bool AdvisorAnalysis::process_function_entry(const std::string &line, Function *
 	Function *F = find_function_by_name(funcString);
 	if (!F) {
 		// could not find function by name
-		errs() << "Could not find the function from trace in program!\n";
+		errs() << "Could not find the function from trace in program! " << funcString << "\n";
 		return false;
 	}
 	*function = F;
@@ -1660,6 +1665,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph,
 		ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
 	*outputLog << __func__ << " for function " << F->getName() << "\n";
+	//std::cerr << __func__ << " for function " << F->getName().str() << "\n";
 
 	print_execution_order(execOrder);
 
@@ -3186,6 +3192,86 @@ void AdvisorAnalysis::print_optimal_configuration_for_all_calls(Function *F) {
 		std::ofstream outfile(outfileName);
 		boost::write_graphviz(outfile, *fIt, vpw, epw);
 	}
+}
+
+
+bool AdvisorAnalysis::get_dependence_graph_from_file(std::string fileName, DepGraph **DG, std::string funcName) {
+	//std::cerr << "***************\n";
+	// allocate space for dg
+	DepGraph *depGraph = new DepGraph;
+
+	// read file
+	ifstream fin;
+	fin.open(fileName.c_str());
+
+	if (!fin.good()) {
+		return false; // file not found
+	}
+
+	std::string line;
+
+	std::cerr << "Getting Dependence Graph from log: " << fileName << "\n";
+
+	while (std::getline(fin, line)) {
+		if (std::regex_match(line, std::regex("(vertex )(.*)( )(.*)"))) {
+			//===================================//
+			// parse line - begin
+			//===================================//
+			const char *delimiter = " ";
+			std::vector<char> lineCopy(line.begin(), line.end());
+			lineCopy.push_back(0);
+
+			char *pch = std::strtok(&lineCopy[7], delimiter);
+			std::string bbString(pch);
+			
+			pch = strtok(NULL, delimiter);
+			std::string vString(pch);
+			//===================================//
+			// parse line - end
+			//===================================//
+
+			BasicBlock *BB = find_basicblock_by_name(funcName, bbString);
+			
+			// add vertex
+			DepGraph_descriptor currVertex = boost::add_vertex(*depGraph);
+			(*depGraph)[currVertex] = BB;
+
+			std::cerr << "found basic block for dep graph: " << BB->getName().str() << "\n";
+		} else if (std::regex_match(line, std::regex("(edge )(.*)( )(.*)()(.*)"))) {
+			//===================================//
+			// parse line - begin
+			//===================================//
+			const char *delimiter = " ";
+			std::vector<char> lineCopy(line.begin(), line.end());
+			lineCopy.push_back(0);
+
+			char *pch = std::strtok(&lineCopy[5], delimiter);
+			std::string source(pch);
+
+			pch = strtok(NULL, delimiter);
+			std::string target(pch);
+
+			pch = strtok(NULL, delimiter);
+			std::string trueDep(pch);
+			//===================================//
+			// parse line - end
+			//===================================//
+
+			if (std::atoi(trueDep.c_str()) == 1) {
+				boost::add_edge(std::atoi(source.c_str()), std::atoi(target.c_str()), true, *depGraph);
+			} else if (std::atoi(trueDep.c_str()) == 0) {
+				boost::add_edge(std::atoi(source.c_str()), std::atoi(target.c_str()), false, *depGraph);
+			} else {
+				assert(0);
+			}
+		
+		} else {
+			std::cerr << "Unknown line in " << fileName << "\n";
+			assert(0);
+		}
+	}
+	*DG = depGraph;
+	return true;
 }
 
 

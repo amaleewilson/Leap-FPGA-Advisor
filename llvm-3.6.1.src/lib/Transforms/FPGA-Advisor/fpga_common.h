@@ -144,9 +144,9 @@ class DependenceGraph : public FunctionPass {
 		DepGraph &getDepGraph() {
 			return DG;
 		}
-		static DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &DG);
+		static DepGraph_descriptor get_vertex_descriptor_for_basic_block(BasicBlock *BB, DepGraph &depGraph);
 		static bool is_basic_block_dependent(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
-		static void get_all_basic_block_dependencies(DepGraph &DG, BasicBlock *BB, std::vector<BasicBlock *> &deps);
+		static void get_all_basic_block_dependencies(DepGraph &depGraph, BasicBlock *BB, std::vector<BasicBlock *> &deps);
 		static bool is_basic_block_dependence_true(BasicBlock *BB1, BasicBlock *BB2, DepGraph &DG);
 	
 	private:
@@ -156,6 +156,7 @@ class DependenceGraph : public FunctionPass {
 		void insert_dependent_basic_block_all(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep);
 		void insert_dependent_basic_block_all_memory(std::vector<std::pair<BasicBlock *, bool> > &list, bool trueDep);
 		bool unsupported_memory_instruction(Instruction *I);
+		void output_graph_to_file(raw_ostream *outputFile);
 
 		Function *func;
 		MemoryDependenceAnalysis *MDA;
@@ -261,9 +262,9 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 		static char ID;
 		FunctionScheduler() : FunctionPass(ID) {}
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
-			AU.addPreserved<AliasAnalysis>();
-			AU.addPreserved<MemoryDependenceAnalysis>();
-			AU.addPreserved<DependenceGraph>();
+			//AU.addPreserved<AliasAnalysis>();
+			//AU.addPreserved<MemoryDependenceAnalysis>();
+			//AU.addPreserved<DependenceGraph>();
 			AU.setPreservesAll();
 		}
 		bool runOnFunction(Function &F) {
@@ -678,6 +679,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void print_basic_block_configuration(Function *F, raw_ostream *out);
 		void print_optimal_configuration_for_all_calls(Function *F);
 		void print_execution_order(ExecutionOrderList_iterator execOrder);
+
+		// dependence graph construction
+		bool get_dependence_graph_from_file(std::string fileName, DepGraph **depGraph, std::string funcName);
 
 		// define some data structures for collecting statistics
 		std::vector<Function *> functionList;

@@ -58,8 +58,9 @@ LINK=$(LLVM_BUILD)llvm-link
 # set opt related flags
 #COMPILE_OPT_FLAG=
 OPT_LD_FLAG= -load=$(LLVM_BUILD_HOME)lib/LLVMFPGA-Advisor.so 
-OPT_FLAGS= -O1 -custom-aa 
+OPT_FLAGS= -O2
 TRACE_LOG?= trace.log
+AA_FLAGS= -basicaa -tbaa
 
 #ifdef($(PRINT_DEPGRAPH))
 #	OPT_FLAGS+= -print-dg 
@@ -80,6 +81,7 @@ PDF_FILES=$(patsubst %.dot, %.pdf, $(DOT_FILES))
 all:
 	make c
 	make i
+	make dep
 	make ana
 
 # compile does the frontend compilation of the program and llvm optimization
@@ -93,22 +95,26 @@ c: $(NAME).$(EXT)
 # we may need to deal with code that doesn't finish...
 i: $(NAME).opt.bc
 	@echo "Running instrumentation stage..."
-	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -fpga-advisor-instrument < $(NAME).opt.bc > $(NAME).opt.inst.bc
+	$(OPT) $(OPT_LD_FLAG) $(DEBUG) -fpga-advisor-instrument < $(NAME).opt.bc > $(NAME).opt.inst.bc
 	$(DIS) $(NAME).opt.inst.bc
 	$(LINK) $(NAME).opt.inst.bc $(RDTSC_FILE) -o $(NAME).opt.inst.linked.bc
 	$(DIS) $(NAME).opt.inst.linked.bc
 	$(LLI) $(NAME).opt.inst.linked.bc > $(TRACE_LOG)
 
+dep:
+	@echo "Running dependence analysis stage..."
+	$(OPT) $(OPT_LD_FLAG) $(DEBUG) $(AA_FLAGS) -depgraph -print-dg < $(NAME).opt.bc > /dev/null
+
 # fpga advisor analysis
 ana: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
-	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
+	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
 
 # generate static dependence graph
 depgraph: $(NAME).opt.bc
 	@echo "Creating static dependence graphs"
-	$(OPT) $(OPT_LD_FLAG) $(OPT_FLAGS) $(DEBUG) -depgraph -print-dg < $(NAME).opt.bc > /dev/null
+	$(OPT) $(OPT_LD_FLAG) $(DEBUG) -depgraph -print-dg < $(NAME).opt.bc > /dev/null
 
 # generate call graph for program
 call-graph:
