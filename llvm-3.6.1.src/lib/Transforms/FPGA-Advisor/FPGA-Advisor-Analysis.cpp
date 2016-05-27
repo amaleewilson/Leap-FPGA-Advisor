@@ -146,6 +146,8 @@ static cl::opt<unsigned int> TraceThreshold("trace-threshold", cl::desc("Maximum
 );
 static cl::opt<unsigned int> AreaConstraint("area-constraint", cl::desc("Set the area constraint"),
 		cl::Hidden, cl::init(0));
+static cl::opt<unsigned> UserTransitionDelay("transition-delay", cl::desc("Set the fpga to cpu transition delay baseline"),
+		cl::Hidden, cl::init(0));
 
 //===----------------------------------------------------------------------===//
 // List of statistics -- not necessarily the statistics listed above,
@@ -422,6 +424,10 @@ void AdvisorAnalysis::print_recursive_functions() {
 // Return: false if function cannot be synthesized
 // Function looks at the loops within the function
 bool AdvisorAnalysis::run_on_function(Function *F) {
+	unsigned cpuOnlyLatency = UINT_MAX;
+	unsigned fpgaOnlyLatency = UINT_MAX;
+	unsigned fpgaOnlyArea = 0;
+
 	*outputLog << "Examine function: " << F->getName() << "\n";
 	// Find constructs that are not supported by HLS
 	if (has_unsynthesizable_construct(F)) {
@@ -461,7 +467,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	// the starting point of the algorithm is the MOST parallel
 	// configuration, which can be found by scheduling independent
 	// sic blocks in the earliest cycle that it is allowed to be executed
-	find_maximal_configuration_for_all_calls(F);
+	find_maximal_configuration_for_all_calls(F, fpgaOnlyLatency, fpgaOnlyArea);
 
 	*outputLog << "Maximal basic block configuration for function: " << F->getName() << "\n";
 	print_basic_block_configuration(F, outputLog);
@@ -484,7 +490,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	//	- move in the direction of maximum performance/area
 	//		i.e. reduce the basic block which provides the least performance/area
 	//	- for now, we will finish iterating when we find a local maximum of performance/area
-	find_optimal_configuration_for_all_calls(F);
+	find_optimal_configuration_for_all_calls(F, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 
 	*outputLog << "===-------------------------------------===\n";
 	*outputLog << "Final optimal basic block configuration for function: " << F->getName() << "\n";
@@ -522,7 +528,8 @@ bool AdvisorAnalysis::has_unsynthesizable_construct(Function *F) {
 	// no external function calls
 	if (has_external_call(F)) {
 		*outputLog << "Function has external function call.\n";
-		return true;
+		// return true;
+		return false; // we ignore these for now!!?!? FIXME
 	}
 
 	// examine memory accesses
@@ -943,6 +950,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 }
 #endif
 
+#if 0
 // Function: get_program_trace
 // Return: false if unsuccessful
 // Reads input trace file, parses and stores trace into executionTrace map
@@ -1068,6 +1076,134 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 	}
 	return true;
 }
+#endif
+
+
+// Function: get_program_trace
+// Return: false if unsuccessful
+// Reads input trace file, parses and stores trace into executionTrace map
+bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
+	// the instrumentation phase will instrument all functions as long as
+	// they are not external to the module (this will include recursive functions)
+	// when recording the trace, create the trace for each function encountered,
+	// however, simply ignore them later
+
+	// read file
+	ifstream fin;
+	fin.open(fileIn.c_str());
+	if (!fin.good()) {
+		return false; // file not found
+	}
+
+	std::string line;
+
+	// unique ID for each basic block executed
+	int ID = 0;
+
+	// for keeping track of which function and execution graph to insert into
+	TraceGraph_vertex_descriptor lastVertex;
+	TraceGraphList_iterator latestTraceGraph;
+	Function *latestFunction = NULL;
+	ExecutionOrderList_iterator latestExecutionOrder;
+
+	// use a stack to keep track of where we should return to
+	std::stack<FunctionExecutionRecord> funcStack;
+
+	bool showProgressBar = true;
+	// get total line number from file using wc command
+	FILE *in;
+	char buf[256];
+	
+	unsigned int fileLineNum;
+	unsigned int traceThreshold = TraceThreshold;
+
+	std::string cmd = "wc " + fileIn;
+	if (!(in = popen(cmd.c_str(), "r"))) {
+		// if cannot execute command, don't show progress bar
+		showProgressBar = false;
+		fileLineNum = UINT_MAX;
+	} else {
+		assert(fgets(buf, sizeof(buf), in) != NULL);
+		*outputLog << "WC " << buf << "\n";
+		char *pch = std::strtok(&buf[0], " ");
+		fileLineNum = atoi(pch);
+		*outputLog << "Total lines from " << fileIn << ": " << fileLineNum << "\n";
+		std::cerr << "Total lines " << fileLineNum << "\n";
+	}
+
+	std::cerr << "Processing program trace.\n";
+
+	unsigned int lineNum = 0;
+	unsigned int totalLineNum = std::min(traceThreshold, fileLineNum);
+
+	unsigned int times = 0;
+	while (std::getline(fin, line)) {
+		if (lineNum > traceThreshold) {
+			break;
+		}
+
+		if (showProgressBar) {
+			// print a processing progress bar
+			// 20 points, print progress every 5% processed
+			unsigned int fivePercent = totalLineNum / 20;
+			if ((lineNum % fivePercent) == 0) {
+				std::cerr << BOLDGREEN << " [ " << 5 * times << "% ] " << RESET << lineNum << "/" << totalLineNum << "\n";
+				times++;
+			}
+			std::cerr << RESET;
+		}
+
+		*outputLog << "PROCESSING LINE: " << line << " (" << lineNum++ << ")\n";
+		//*outputLog << "latestTraceGraph iterator: " << latestTraceGraph << "\n";
+		*outputLog << "lastVertex: " << lastVertex << "\n";
+		// There are 5 types of messages:
+		// 1. Enter Function: <func name>
+		// 2. Basic Block: <basic block name> Function: <func name>
+		// 3. Return from: <func name>
+		// 4. Store at address: <addr start> size in bytes: <size>
+		// 5. Load from address: <addr start> size in bytes: <size>
+		if (std::regex_match(line, std::regex("(Entering Function: )(.*)"))) {
+			if (!process_function_entry(line, &latestFunction, latestTraceGraph, lastVertex, latestExecutionOrder, funcStack)) {
+				*outputLog << "process function entry: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
+			if (!process_basic_block_entry(line, ID, latestTraceGraph, lastVertex, latestExecutionOrder)) {
+				*outputLog << "process basic block entry: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Store at address: )(.*)( size in bytes: )(.*)") )) {
+			if (!process_store(line, latestFunction, latestTraceGraph, lastVertex)) {
+				*outputLog << "process store: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Load from address: )(.*)( size in bytes: )(.*)") )) {
+			if (!process_load(line, latestFunction, latestTraceGraph, lastVertex)) {
+				*outputLog << "process load: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time start: )(.*)"))) {
+			if (!process_time(line, latestTraceGraph, lastVertex, true)) {
+				*outputLog << "process time start: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(BasicBlock Clock get time stop: )(.*)"))) {
+			if (!process_time(line, latestTraceGraph, lastVertex, false)) {
+				*outputLog << "process time stop: FAILED.\n";
+				return false;
+			}
+		} else if (std::regex_match(line, std::regex("(Return from: )(.*)"))) {
+			if (!process_function_return(line, &latestFunction, funcStack, latestTraceGraph, lastVertex, latestExecutionOrder)) {
+				*outputLog << "process function return: FAILED.\n";
+				return false;
+			}
+		} else {
+			// ignore, probably program output
+		}
+	}
+	return true;
+}
+
 
 
 // process one line of trace containing a time start or stop
@@ -1605,12 +1741,14 @@ Function *AdvisorAnalysis::find_function_by_name(std::string funcName) {
 // across all individual calls within the trace
 // Does not look across function boundaries
 // The parallelization factor will be stored in metadata for each basicblock
-bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
+bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsigned &fpgaOnlyLatency, unsigned &fpgaOnlyArea) {
 	*outputLog << __func__ << " for function " << F->getName() << "\n";;
 	//assert(executionTrace.find(F) != executionTrace.end());
 	assert(executionGraph.find(F) != executionGraph.end());
 	assert(executionOrderListMap.find(F) != executionOrderListMap.end());
 	bool scheduled = false;
+
+	int unconstrainedLastCycle = -1;
 
 	initialize_basic_block_instance_count(F);
 
@@ -1656,8 +1794,17 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F) {
 			// use gradient descent method
 			//modify_resource_requirement(F, fIt);
 
+			unconstrainedLastCycle = lastCycle;
+
 		}
 	//}
+
+	// keep this value for determining when to stop pursuing fpga accelerator implementation
+	fpgaOnlyLatency = unconstrainedLastCycle;
+	fpgaOnlyArea = get_area_requirement(F);
+
+	*outputFile << "Unconstrained schedule: " << unconstrainedLastCycle << "\n";
+	*outputFile << "Area requirement: " << fpgaOnlyArea << "\n";
 
 	return scheduled;
 }
@@ -2614,12 +2761,11 @@ bool AdvisorAnalysis::latest_parent(TraceGraph_out_edge_iterator edge, TraceGrap
 // onto cpu). We iterate this process until the design now "fits"
 // If the design fits on the fpga, we now again use the gradient descent method
 // to find blocks which contribute zero performance/area and remove them.
-void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
+void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsigned &cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
 	*outputLog << __func__ << "\n";
 	assert(executionGraph.find(F) != executionGraph.end());
 
-	// FIXME
-	// for now just hard code some area...
+	// default hard-coded area constraint that means nothing
 	unsigned areaConstraint = 1000;
 	if (AreaConstraint > 0) {
 		areaConstraint = AreaConstraint;
@@ -2633,6 +2779,10 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 
 	std::cerr << F->getName().str() << "\n";
 	std::cerr << "Progress bar |";
+
+	// figure out the final latency when full cpu execution
+	cpuOnlyLatency = get_cpu_only_latency(F);
+
 	while (!done) {
 		ConvergenceCounter++; // for stats
 		std::cerr << BOLDMAGENTA << "=" << RESET; // progress bar
@@ -2642,14 +2792,20 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			*outputLog << "Area constraint violated. Reduce area.\n";
 			BasicBlock *removeBB;
 			int deltaDelay = INT_MAX;
-			incremental_gradient_descent(F, removeBB, deltaDelay);
-			//decrement_basic_block_instance_count(removeBB);
-			*outputLog << "[step] Remove basic block: " << removeBB->getName() << "\n";
-			decrement_basic_block_instance_count_and_update_transition(removeBB);
+			bool cpuOnly = !incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
+			if (cpuOnly) {
+				// decrement all basic blocks until cpu-only
+				*outputLog << "[step] Remove all basic blocks\n";
+				decrement_all_basic_block_instance_count_and_update_transition(F);
+			} else {
+				//decrement_basic_block_instance_count(removeBB);
+				*outputLog << "[step] Remove basic block: " << removeBB->getName() << "\n";
+				decrement_basic_block_instance_count_and_update_transition(removeBB);
 
-			// printout
-			*outputLog << "Current basic block configuration.\n";
-			print_basic_block_configuration(F, outputLog);
+				// printout
+				*outputLog << "Current basic block configuration.\n";
+				print_basic_block_configuration(F, outputLog);
+			}
 		} else {
 			// terminate the process if:
 			// 1. removal of block results in increase in delay
@@ -2658,7 +2814,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 			*outputLog << "Area constraint satisfied, remove non performing blocks.\n";
 			BasicBlock *removeBB = NULL;
 			int deltaDelay = INT_MIN;
-			incremental_gradient_descent(F, removeBB, deltaDelay);
+			incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 
 			// only remove block if it doesn't negatively impact delay
 			if (deltaDelay >= 0 && removeBB != NULL) {
@@ -2692,7 +2848,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 		std::vector<TraceGraph_vertex_descriptor> roots;
 		roots.clear();
 		find_root_vertices(roots, fIt);
-		finalLatency += schedule_with_resource_constraints(roots, fIt, F);
+		finalLatency += schedule_with_resource_constraints(roots, fIt, F, false);
 	}
 	
 	unsigned finalArea = get_area_requirement(F);
@@ -2707,7 +2863,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 // Function will iterate through each basic block which has a hardware instance of more than 0
 // to determine the change in delay with the removal of that basic block and finds the basic block
 // whose contribution of delay/area is the least (closest to zero or negative)
-void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay) {
+bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
 	unsigned initialArea = get_area_requirement(F);
 	*outputLog << "Initial area: " << initialArea << "\n";
 	unsigned initialLatency = 0;
@@ -2717,7 +2873,40 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 		std::vector<TraceGraph_vertex_descriptor> roots;
 		roots.clear();
 		find_root_vertices(roots, fIt);
-		initialLatency += schedule_with_resource_constraints(roots, fIt, F);
+		initialLatency += schedule_with_resource_constraints(roots, fIt, F, false);
+	}
+
+	// check to see if we should abandon search and opt for cpu only implementation
+	// This is the attempt to solve the local minima problem
+	// The intuition behind this is that, given a latency-area curve and given that
+	// we know the solution for the accelerator only and cpu only implementations,
+	// we have an idea of the projected performance that we should beat with the
+	// accelerator-cpu implementation. If the performance of that is worse than 
+	// the projection and the accelerator area usage is low, we should abandon
+	// the search and opt for cpu-only implementation instead.
+	//
+	//	|
+	//	| * *
+	//	|*   *
+	//	|     *
+	//	|      *
+	//	|        *
+	//	|            *
+	//	|                     * *
+	//	|____________________________
+    //  c       a               f
+    //
+	//   point a is the point at which the projected performance intersects with the
+	//   actual performance, to the left of point a, the performance of a cpu-accelerator
+	//   mix will always perform worse than the cpu only
+	unsigned B = fpgaOnlyLatency;
+	unsigned dA = fpgaOnlyArea - initialArea;
+	float m = (cpuOnlyLatency - fpgaOnlyLatency) / fpgaOnlyArea;
+	float projectedPerformance = (m * dA) + B;
+	*outputLog << "Projected Performance at area is " << projectedPerformance << "\n";
+
+	if ((initialLatency > (unsigned) projectedPerformance) && initialArea < 100 /*hard coded...*/) {
+		return false; // go to cpu only solution
 	}
 
 	// we set an initial min marginal performance as the average performance/area
@@ -2741,7 +2930,7 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 				// become implemented on cpu
 				//update_transition_delay(fIt);
 
-				latency += schedule_with_resource_constraints(roots, fIt, F);
+				latency += schedule_with_resource_constraints(roots, fIt, F, false);
 			}
 
 			*outputLog << "New latency: " << latency << "\n";
@@ -2773,6 +2962,8 @@ void AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 			increment_basic_block_instance_count_and_update_transition(BB);
 		} // else continue
 	}
+
+	return true; // not going to cpu only solution
 }
 
 #if 0
@@ -2895,6 +3086,22 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 }
 #endif
 
+unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
+	*outputLog << "Calculating schedule for CPU only execution.\n";
+
+	unsigned cpuOnlyLatency = 0;
+
+	// loop through all calls to function, get total latency
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+		fIt != executionGraph[F].end(); fIt++) {
+		std::vector<TraceGraph_vertex_descriptor> roots;
+		roots.clear();
+		find_root_vertices(roots, fIt);
+		cpuOnlyLatency += schedule_with_resource_constraints(roots, fIt, F, true);
+	}
+
+	return cpuOnlyLatency;
+}
 
 // Function: schedule_with_resource_constraints
 // Return: latency of execution of trace
@@ -2903,7 +3110,7 @@ int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&remo
 // the latency of the particular function call instance represented by this
 // execution trace
 unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, 
-						TraceGraphList_iterator graph_it, Function *F) {
+						TraceGraphList_iterator graph_it, Function *F, bool cpuOnly) {
 	*outputLog << __func__ << "\n";
 
 	TraceGraph graph = *graph_it;
@@ -2926,7 +3133,7 @@ unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	//===----------------------------------------------------===//
 	// Populate resource table
 	//===----------------------------------------------------===//
-	initialize_resource_table(F, resourceTable);
+	initialize_resource_table(F, resourceTable, cpuOnly);
 
 	// reset the cpu free cycle global!
 	cpuCycle = -1;
@@ -3049,6 +3256,17 @@ bool AdvisorAnalysis::increment_basic_block_instance_count_and_update_transition
 	return true;
 }
 
+void AdvisorAnalysis::decrement_all_basic_block_instance_count_and_update_transition(Function *F) {
+	for (auto BB = F->begin(); BB != F->end(); BB++) {
+		while(decrement_basic_block_instance_count(BB));
+	}
+
+	// this is dumb and inefficient, but just do this for now
+	for (TraceGraphList_iterator fIt = executionGraph[F].begin(); fIt != executionGraph[F].end(); fIt++) {
+		update_transition_delay(fIt);
+	}
+}
+
 /*
 // Function: get_basic_block_instance_count
 // Return: the number of instances of this basic block from metadata
@@ -3082,14 +3300,14 @@ static int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
 // CPU: represented by a flag
 // other??
 // FIXME: integrate the cpu
-void AdvisorAnalysis::initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable) {
+void AdvisorAnalysis::initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable, bool cpuOnly) {
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		int repFactor = get_basic_block_instance_count(BB);
 		if (repFactor < 0) {
 			continue;
 		}
 
-		if (repFactor == 0) {
+		if (repFactor == 0 || cpuOnly) {
 			// cpu
 			std::vector<unsigned> resourceVector(0);
 			resourceTable.insert(std::make_pair(BB, std::make_pair(true, resourceVector)));
@@ -3163,6 +3381,11 @@ void AdvisorAnalysis::update_transition_delay(TraceGraphList_iterator graph) {
 // fpga to cpu, or cpu to fpga
 unsigned AdvisorAnalysis::get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW) {
 	unsigned delay = 100; // some baseline delay
+
+	if (UserTransitionDelay > 0) {
+		delay = UserTransitionDelay;
+	}
+	
 	// need to do something here...
 	// the delay shouldn't be constant?
 	return delay;

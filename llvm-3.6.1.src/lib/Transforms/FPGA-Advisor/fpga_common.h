@@ -185,7 +185,6 @@ typedef struct {
 	std::vector<StoreInst *> storeList;
 } FunctionInfo;
 
-
 // TraceGraph vertex property struct representing each individual
 // scheduling element (basic block granularity)
 typedef struct {
@@ -199,6 +198,7 @@ typedef struct {
 		int get_start() const { return cycStart;}
 		int get_end() const { return cycEnd;}
 
+		Function *function;
 		BasicBlock *basicblock;
 		uint64_t ID;
 		// the min cycles represent the earliest the basic block may
@@ -733,7 +733,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		Function *find_function_by_name(std::string funcName);
 
 		// functions that do analysis on trace
-		bool find_maximal_configuration_for_all_calls(Function *F);
+		bool find_maximal_configuration_for_all_calls(Function *F, unsigned &fpgaOnlyLatency, unsigned &fpgaOnlyArea);
 		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		//bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
@@ -745,17 +745,19 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int lastCycle);
 		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
-		void find_optimal_configuration_for_all_calls(Function *F);
-		void incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay);
+		void find_optimal_configuration_for_all_calls(Function *F, unsigned &cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
+		bool incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
 		void set_basic_block_instance_count(BasicBlock *BB, int value);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
 		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
+		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
-		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
+		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly);
+		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable, bool cpuOnly);
+		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);
