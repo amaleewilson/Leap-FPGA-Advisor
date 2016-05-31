@@ -73,6 +73,8 @@
 #include <list>
 #include <string>
 
+#include <dlfcn.h>
+
 using namespace llvm;
 
 namespace fpga {
@@ -323,6 +325,9 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAreaEstimator> {
 	public:
 		static char ID;
+                static void *analyzerLibHandle;
+                static int (*getBlockArea)(BasicBlock *BB);
+
 		FunctionAreaEstimator() : FunctionPass(ID) {}
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
 			AU.addPreserved<AliasAnalysis>();
@@ -345,15 +350,45 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 
 		void visitBasicBlock(BasicBlock &BB) {
 			int area = 0;
-			// approximate area of basic block as a weighted sum
-			// the weight is the complexity of the instruction
-			// the sum is over all compute instructions
-			// W = 1 + x1y1 + x2y2 + ... + xnyn
-			// x1 is the complexity of the operation
-			// y1 is the number of this operation existing in the basic block
-			for (auto I = BB.begin(); I != BB.end(); I++) {
-				area += instruction_area_complexity(I);
-			}
+                        bool useDefault = true;
+                        char * analyzerLib;
+                        
+                        if (analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER")) {
+                          useDefault = false;
+                          // Load up the library
+                          analyzerLibHandle = dlopen(analyzerLib, RTLD_GLOBAL | RTLD_LAZY);       
+
+                          if (analyzerLibHandle == NULL) {
+                            printf("failed to load %s\n", analyzerLib);
+                            std::cerr << dlerror() << std::endl;
+                            exit(1);
+                          }
+   
+                          // pull objects out of the library         
+                          getBlockArea = (int (*)(BasicBlock* BB)) dlsym(analyzerLibHandle, "getBlockArea");
+
+                          if (getBlockArea == NULL) {
+                            printf("failed to load getBlockArea\n");  
+                          }
+                         
+                          area = getBlockArea(&BB); 
+
+                        }        
+
+                        if (useDefault) {
+                          // use some fallback estimator code
+                          // approximate area of basic block as a weighted sum
+                          // the weight is the complexity of the instruction
+                          // the sum is over all compute instructions
+                          // W = 1 + x1y1 + x2y2 + ... + xnyn
+                          // x1 is the complexity of the operation
+                          // y1 is the number of this operation existing in the basic block
+
+                          for (auto I = BB.begin(); I != BB.end(); I++) {
+                            area += instruction_area_complexity(I);
+                          }
+                        }        
+
 			areaTable.insert(std::make_pair(BB.getTerminator()->getParent(), area));
 		}
 
