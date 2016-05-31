@@ -416,8 +416,32 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 		static char ID;
                 static void *analyzerLibHandle;
                 static int (*getBlockArea)(BasicBlock *BB);
+                static bool useDefault;
 
-		FunctionAreaEstimator() : FunctionPass(ID) {}
+                FunctionAreaEstimator() : FunctionPass(ID) {
+                  char * analyzerLib;
+
+                  if (analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER")) {
+                    useDefault = false;
+                    // Load up the library
+                    analyzerLibHandle = dlopen(analyzerLib, RTLD_GLOBAL | RTLD_LAZY);       
+                    
+                    if (analyzerLibHandle == NULL) {
+                      printf("failed to load %s\n", analyzerLib);
+                      std::cerr << dlerror() << std::endl;
+                      exit(1);
+                    }
+                    
+                    // pull objects out of the library         
+                    getBlockArea = (int (*)(BasicBlock* BB)) dlsym(analyzerLibHandle, "getBlockArea");
+
+                    if (getBlockArea == NULL) {
+                      printf("failed to load getBlockArea\n");  
+                      exit(1);
+                    }                         
+                  }
+                }        
+                
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
 			AU.addPreserved<AliasAnalysis>();
 			AU.addPreserved<MemoryDependenceAnalysis>();
@@ -439,31 +463,7 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 
 		void visitBasicBlock(BasicBlock &BB) {
 			int area = 0;
-                        bool useDefault = true;
-                        char * analyzerLib;
                         
-                        if (analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER")) {
-                          useDefault = false;
-                          // Load up the library
-                          analyzerLibHandle = dlopen(analyzerLib, RTLD_GLOBAL | RTLD_LAZY);       
-
-                          if (analyzerLibHandle == NULL) {
-                            printf("failed to load %s\n", analyzerLib);
-                            std::cerr << dlerror() << std::endl;
-                            exit(1);
-                          }
-   
-                          // pull objects out of the library         
-                          getBlockArea = (int (*)(BasicBlock* BB)) dlsym(analyzerLibHandle, "getBlockArea");
-
-                          if (getBlockArea == NULL) {
-                            printf("failed to load getBlockArea\n");  
-                          }
-                         
-                          area = getBlockArea(&BB); 
-
-                        }        
-
                         if (useDefault) {
                           // use some fallback estimator code
                           // approximate area of basic block as a weighted sum
@@ -476,7 +476,9 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
                           for (auto I = BB.begin(); I != BB.end(); I++) {
                             area += instruction_area_complexity(I);
                           }
-                        }        
+                        } else {
+                          area = getBlockArea(&BB); 
+                        }      
 
 			areaTable.insert(std::make_pair(BB.getTerminator()->getParent(), area));
 		}

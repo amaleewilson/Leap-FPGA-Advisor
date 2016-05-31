@@ -3519,3 +3519,7 @@ static RegisterPass<FunctionScheduler> Z("func-scheduler", "FPGA-Advisor Analysi
 
 char FunctionAreaEstimator::ID = 0;
 static RegisterPass<FunctionAreaEstimator> Y("func-area-estimator", "FPGA-Advisor Analysis Function Area Estimator Pass", false, false);
+
+void *FunctionAreaEstimator::analyzerLibHandle;
+int (*FunctionAreaEstimator::getBlockArea)(BasicBlock *BB);
+bool FunctionAreaEstimator::useDefault = true;
