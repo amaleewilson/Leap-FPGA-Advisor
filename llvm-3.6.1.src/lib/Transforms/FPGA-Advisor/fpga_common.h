@@ -52,6 +52,7 @@
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/MemoryDependenceAnalysis.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Instruction.def"
 #include "llvm/IR/InstVisitor.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/TypeBuilder.h"
@@ -186,7 +187,6 @@ typedef struct {
 	std::vector<StoreInst *> storeList;
 } FunctionInfo;
 
-
 // TraceGraph vertex property struct representing each individual
 // scheduling element (basic block granularity)
 typedef struct {
@@ -200,6 +200,7 @@ typedef struct {
 		int get_start() const { return cycStart;}
 		int get_end() const { return cycEnd;}
 
+		Function *function;
 		BasicBlock *basicblock;
 		uint64_t ID;
 		// the min cycles represent the earliest the basic block may
@@ -297,6 +298,94 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			return search->second;
 		}
 		*/
+
+		int get_instruction_latency(Instruction *I) {
+			int latency = 0;
+			switch(I->getOpcode()) {
+				// simple binary and logical operations
+				case  Instruction::Add :
+				case  Instruction::Sub :
+				case  Instruction::Shl :
+                case  Instruction::LShr:
+                case  Instruction::AShr:
+                case  Instruction::And :
+                case  Instruction::Or  :
+                case  Instruction::Xor : latency = 1; break;
+
+				// complicated binary operations
+				case  Instruction::Mul :
+				case  Instruction::UDiv:
+				case  Instruction::SDiv:
+				case  Instruction::URem:
+				case  Instruction::SRem: latency = 10; break;
+
+				// FP operations
+				case  Instruction::FAdd:
+				case  Instruction::FSub:
+				case  Instruction::FMul:
+				case  Instruction::FDiv:
+				case  Instruction::FRem: latency = 15; break;
+
+				// memory operations
+                case  Instruction::Alloca: latency = 0; break;
+                case  Instruction::GetElementPtr: latency = 1; break;
+                case  Instruction::Load  :
+                case  Instruction::Store :
+                case  Instruction::Fence :
+                case  Instruction::AtomicCmpXchg:
+				case  Instruction::AtomicRMW : latency = 5; break;
+
+				// cast operations
+				// these shouldn't take any cycles
+                case  Instruction::Trunc   :
+                case  Instruction::ZExt    :
+                case  Instruction::SExt    :
+                case  Instruction::PtrToInt:
+                case  Instruction::IntToPtr:
+                case  Instruction::BitCast : latency = 0; break;
+
+				// more complicated cast operations
+                case  Instruction::FPToUI  :
+                case  Instruction::FPToSI  :
+                case  Instruction::UIToFP  :
+                case  Instruction::SIToFP  :
+                case  Instruction::FPTrunc :
+                case  Instruction::FPExt   :
+                case  Instruction::AddrSpaceCast: latency = 5; break;
+
+				// other
+                case  Instruction::ICmp   :
+                case  Instruction::FCmp   :
+                case  Instruction::PHI    :
+                case  Instruction::Select :
+                case  Instruction::UserOp1:
+                case  Instruction::UserOp2:
+                case  Instruction::VAArg  :
+                case  Instruction::ExtractElement:
+                case  Instruction::InsertElement:
+                case  Instruction::ShuffleVector:
+                case  Instruction::ExtractValue:
+                case  Instruction::InsertValue:
+                case  Instruction::LandingPad: latency = 5; break;
+				
+                case  Instruction::Call   : latency = 100; break; // can be more sophisticated!!!
+
+                case  Instruction::Ret        :
+                case  Instruction::Br         :
+                case  Instruction::Switch     :
+                case  Instruction::Resume     :
+                case  Instruction::Unreachable: latency = 0; break;
+                case  Instruction::Invoke     : latency = 100; break; // can be more sophisticated!!!
+                case  Instruction::IndirectBr : latency = 10; break;
+
+				default: latency = 1;
+					std::cerr << "Warning: unknown operation " << I->getOpcodeName() << "\n";
+					break;
+			}
+
+			return latency;
+		}
+
 		std::map<BasicBlock *, int> &getFPGALatencyTable() {
 			return latencyTableFPGA;
 		}
@@ -305,7 +394,7 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			int latency = 0;
 			// approximate latency of basic block as number of instructions
 			for (auto I = BB.begin(); I != BB.end(); I++) {
-				latency++;
+				latency += get_instruction_latency(I);
 			}
 			latencyTableFPGA.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
 		}
@@ -679,7 +768,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		Function *find_function_by_name(std::string funcName);
 
 		// functions that do analysis on trace
-		bool find_maximal_configuration_for_all_calls(Function *F);
+		bool find_maximal_configuration_for_all_calls(Function *F, unsigned &fpgaOnlyLatency, unsigned &fpgaOnlyArea);
 		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		//bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
@@ -691,17 +780,19 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int lastCycle);
 		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
-		void find_optimal_configuration_for_all_calls(Function *F);
-		void incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay);
+		void find_optimal_configuration_for_all_calls(Function *F, unsigned &cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
+		bool incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
 		void set_basic_block_instance_count(BasicBlock *BB, int value);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
 		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
+		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F);
-		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable);
+		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly);
+		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable, bool cpuOnly);
+		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
 		unsigned get_transition_delay(BasicBlock *source, BasicBlock *target, bool CPUToHW);

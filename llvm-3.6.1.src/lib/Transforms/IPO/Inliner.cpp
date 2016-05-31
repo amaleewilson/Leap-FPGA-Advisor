@@ -46,6 +46,10 @@ STATISTIC(NumMergedAllocas, "Number of allocas merged together");
 // if those would be more profitable and blocked inline steps.
 STATISTIC(NumCallerCallersAnalyzed, "Number of caller-callers analyzed");
 
+static cl::opt<bool>
+InlineAll("inline-all", cl::Hidden, cl::init(false), 
+        cl::desc("Sets threshold for inlining always to INT_MAX / 2"));
+
 static cl::opt<int>
 InlineLimit("inline-threshold", cl::Hidden, cl::init(225), cl::ZeroOrMore,
         cl::desc("Control the amount of inlining to perform (default = 225)"));
@@ -302,6 +306,10 @@ unsigned Inliner::getInlineThreshold(CallSite CS) const {
       ColdThreshold < thres)
     thres = ColdThreshold;
 
+  if (InlineAll) {
+	thres = INT_MAX / 2;
+  }
+
   return thres;
 }
 
@@ -342,7 +350,12 @@ bool Inliner::shouldInline(CallSite CS) {
                            " too costly to inline (cost=") +
                          Twine(IC.getCost()) + ", threshold=" +
                          Twine(IC.getCostDelta() + IC.getCost()) + ")");
-    return false;
+    //return false;
+	if (InlineAll) {
+		return true;
+	} else {
+		return false;
+	}
   }
   
   // Try to detect the case where the current inlining candidate caller (call
@@ -413,7 +426,12 @@ bool Inliner::shouldInline(CallSite CS) {
                     CS.getCalledFunction()->getName() +
                     " increases the cost of inlining " +
                     CS.getCaller()->getName() + " in other contexts"));
-      return false;
+      //return false;
+	  if (InlineAll) {
+	  	return true;
+	  } else {
+	  	return false;
+	  }
     }
   }
 

@@ -87,8 +87,8 @@ all:
 # compile does the frontend compilation of the program and llvm optimization
 c: $(NAME).$(EXT)
 	@echo "Running compilation stage..."
-	$(CLANG) -S -emit-llvm $(NAME).$(EXT) -o $(NAME).ll
-	$(OPT) $(OPT_FLAGS) $(COMPILE_OPT_FLAGS) $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
+	$(CLANG) -S -emit-llvm -fopenmp $(NAME).$(EXT) -o $(NAME).ll
+	$(OPT) $(OPT_FLAGS) $(COMPILE_OPT_FLAGS) -inline  -inline-all -debug-only=inline $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
 	$(DIS) $(NAME).opt.bc
 
 # instrumentation stage and run instrumented code
