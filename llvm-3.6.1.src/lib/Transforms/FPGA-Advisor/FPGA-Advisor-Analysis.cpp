@@ -3523,3 +3523,7 @@ static RegisterPass<FunctionAreaEstimator> Y("func-area-estimator", "FPGA-Adviso
 void *FunctionAreaEstimator::analyzerLibHandle;
 int (*FunctionAreaEstimator::getBlockArea)(BasicBlock *BB);
 bool FunctionAreaEstimator::useDefault = true;
+
+void *FunctionScheduler::analyzerLibHandle;
+int (*FunctionScheduler::getBlockLatency)(BasicBlock *BB);
+bool FunctionScheduler::useDefault = true;

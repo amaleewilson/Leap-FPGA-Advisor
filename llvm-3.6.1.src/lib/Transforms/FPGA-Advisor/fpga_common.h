@@ -263,7 +263,33 @@ typedef ExecutionOrderListMap::iterator ExecutionOrderListMap_iterator;
 class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionScheduler> {
 	public:
 		static char ID;
-		FunctionScheduler() : FunctionPass(ID) {}
+                static void *analyzerLibHandle;
+                static int (*getBlockLatency) (BasicBlock *BB);
+                static bool useDefault;
+
+		FunctionScheduler() : FunctionPass(ID) {
+                  char * analyzerLib;
+
+                  if ((analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER"))) {
+                    useDefault = false;
+                    // Load up the library
+                    analyzerLibHandle = dlopen(analyzerLib, RTLD_GLOBAL | RTLD_LAZY);       
+                    
+                    if (analyzerLibHandle == NULL) {
+                      printf("failed to load %s\n", analyzerLib);
+                      std::cerr << dlerror() << std::endl;
+                      exit(1);
+                    }
+                    
+                    // pull objects out of the library         
+                    getBlockLatency = (int (*)(BasicBlock* BB)) dlsym(analyzerLibHandle, "getBlockLatency");
+
+                    if (getBlockLatency == NULL) {
+                      printf("failed to load getBlockLatency\n");  
+                      exit(1);
+                    }                         
+                  }
+                }
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
 			//AU.addPreserved<AliasAnalysis>();
 			//AU.addPreserved<MemoryDependenceAnalysis>();
@@ -392,10 +418,16 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 	
 		void visitBasicBlock(BasicBlock &BB) {
 			int latency = 0;
-			// approximate latency of basic block as number of instructions
-			for (auto I = BB.begin(); I != BB.end(); I++) {
-				latency += get_instruction_latency(I);
-			}
+
+                        if (useDefault) {
+                          // approximate latency of basic block as number of instructions
+                          for (auto I = BB.begin(); I != BB.end(); I++) {
+                            latency += get_instruction_latency(I);
+                          }
+                        } else {
+                          latency = getBlockLatency(&BB); 
+                        }      
+
 			latencyTableFPGA.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
 		}
 	
@@ -421,7 +453,7 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
                 FunctionAreaEstimator() : FunctionPass(ID) {
                   char * analyzerLib;
 
-                  if (analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER")) {
+                  if ((analyzerLib = getenv("FPGA_ADVISOR_USE_DYNAMIC_ANALYZER"))) {
                     useDefault = false;
                     // Load up the library
                     analyzerLibHandle = dlopen(analyzerLib, RTLD_GLOBAL | RTLD_LAZY);       
