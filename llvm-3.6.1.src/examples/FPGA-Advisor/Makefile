@@ -1,5 +1,4 @@
 #===-------------------------------------------------------------------------===#
-#
 # Copyright (c) 2016, Intel Corporation
 # All rights reserved.
 #
@@ -49,7 +48,7 @@ RDTSC_FILE=$(LLVM_EXAMPLES)FPGA-Advisor/common/rdtsc.ll
 #DEBUG= -debug
 
 # set tools
-CLANG=clang
+CLANG=clang++
 OPT=$(LLVM_BUILD)opt
 DIS=$(LLVM_BUILD)llvm-dis
 LLI=$(LLVM_BUILD)lli
@@ -87,8 +86,8 @@ all:
 # compile does the frontend compilation of the program and llvm optimization
 c: $(NAME).$(EXT)
 	@echo "Running compilation stage..."
-	$(CLANG) -S -emit-llvm -fopenmp $(NAME).$(EXT) -o $(NAME).ll
-	$(OPT) $(OPT_FLAGS) $(COMPILE_OPT_FLAGS) -inline  -inline-all -debug-only=inline $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
+	$(CLANG) -Wall -S -emit-llvm -fno-use-cxa-atexit -fopenmp $(NAME).$(EXT) -o $(NAME).ll
+	$(OPT) $(OPT_FLAGS) $(COMPILE_OPT_FLAGS) -inline -inline-all -debug-only=inline $(DEBUG) < $(NAME).ll > $(NAME).opt.bc
 	$(DIS) $(NAME).opt.bc
 
 # instrumentation stage and run instrumented code
@@ -108,7 +107,7 @@ dep:
 # fpga advisor analysis
 ana: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
-	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
+	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -area-constraint=500 -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
 
 # generate static dependence graph
