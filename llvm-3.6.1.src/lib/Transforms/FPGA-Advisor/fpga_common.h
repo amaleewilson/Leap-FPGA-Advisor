@@ -764,7 +764,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 			AU.addRequired<FunctionScheduler>();
 			AU.addRequired<FunctionAreaEstimator>();
 		}
-		AdvisorAnalysis() : ModulePass(ID) {}
+  AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000) {}
 		bool runOnModule(Module &M);
 		void visitFunction(Function &F);
 		void visitBasicBlock(BasicBlock &BB);
@@ -772,6 +772,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		//static int get_basic_block_instance_count(BasicBlock *BB);
 
 	private:
+   	        unsigned areaConstraint;
 		// functions
 		void find_recursive_functions(Module &M);
 		void does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack);
@@ -804,6 +805,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		// functions that do analysis on trace
 		bool find_maximal_configuration_for_all_calls(Function *F, unsigned &fpgaOnlyLatency, unsigned &fpgaOnlyArea);
 		bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph, ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
+                bool prune_basic_block_configuration_to_device_area(Function *F);
+                int  get_total_basic_block_instances(Function *F);
+
 		//bool find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices);
 		bool basicblock_is_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		bool instruction_is_dependent(Instruction *inst1, Instruction *inst2);

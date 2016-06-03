@@ -478,8 +478,15 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 
 	std::cerr << "Finished computing maximal configuration\n";
 
+        // Now that we have a replication factor, we will prune it to honor the area
+        // constraints of the device. 
+        std::cerr << "Maximal basic blocks: " << get_total_basic_block_instances(F) << "\n";
+        *outputFile << "Maximal basic blocks: " << get_total_basic_block_instances(F) << "\n";
+        prune_basic_block_configuration_to_device_area(F);
+        std::cerr << "Pruned basic blocks: " << get_total_basic_block_instances(F) << "\n";
+        *outputFile << "Pruned basic blocks: " << get_total_basic_block_instances(F) << "\n";
 	// by this point, the basic blocks have been annotated by the maximal
-	// replication factor
+	// legal replication factor
 	// build a framework that is able to methodically perturb the basic block
 	// to follow the gradient descent method of restricting basic block
 	// replication to achieve most optimal area-latency result
@@ -2766,7 +2773,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	assert(executionGraph.find(F) != executionGraph.end());
 
 	// default hard-coded area constraint that means nothing
-	unsigned areaConstraint = 1000;
+
 	if (AreaConstraint > 0) {
 		areaConstraint = AreaConstraint;
 	}
@@ -3399,6 +3406,27 @@ void AdvisorAnalysis::print_basic_block_configuration(Function *F, raw_ostream *
 		int repFactor = get_basic_block_instance_count(BB);
 		*out << BB->getName() << "\t[" << repFactor << "]\n";
 	}
+}
+
+int AdvisorAnalysis::get_total_basic_block_instances(Function *F) {
+  int total = 0;
+  for (auto BB = F->begin(); BB != F->end(); BB++) {
+    total += get_basic_block_instance_count(BB);
+  }
+  return total;
+}
+
+bool AdvisorAnalysis::prune_basic_block_configuration_to_device_area(Function *F) {
+
+  for (auto BB = F->begin(); BB != F->end(); BB++) {
+    int areaBB = FunctionAreaEstimator::get_basic_block_area(*AT, BB);
+    int repFactor = get_basic_block_instance_count(BB);
+    int maxBBCount = areaConstraint/areaBB;
+    // Lower repFactor to the maximum for the target FPGA. 
+    repFactor = std::min(maxBBCount, repFactor);                
+    set_basic_block_instance_count(BB, repFactor);
+  }
+
 }
 
 
