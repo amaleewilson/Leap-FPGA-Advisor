@@ -325,15 +325,19 @@ void AdvisorInstr::instrument_rdtsc_before_instruction(Instruction *I, bool star
 	CallInst *CI = CallInst::Create(get_rdtscFunc, llvm::Twine("get_rdtsc"), I);	
 
 	// insert printf after callinst
-	IRBuilder<> builder(CI);
+	IRBuilder<> builder(I);
+
+        // truncate CI result
+        //Value *CITrunc = builder.CreateTrunc(CI, builder.getInt16Ty());
+
 	std::vector<Value *> printfArgs;
 	printfArgs.clear();
 
 	StringRef rdtscMsgString;
 	if (start) {
-		rdtscMsgString = StringRef("\nBasicBlock Clock get time start: %llu\n");
+		rdtscMsgString = StringRef("\nBSTR: %llu\n");
 	} else {
-		rdtscMsgString = StringRef("\nBasicBlock Clock get time stop: %llu\n");
+		rdtscMsgString = StringRef("\nBSTP: %llu\n");
 	}
 
 	Value *rdtscMsg = builder.CreateGlobalStringPtr(rdtscMsgString, "rdtsc_msg_string");
@@ -473,7 +477,7 @@ void AdvisorInstr::instrument_load(LoadInst *LI) {
 
 	// print right after the load
 	IRBuilder<> builder(LI);
-	StringRef loadAddrMsgString = StringRef("\nLoad from address: %p size in bytes: " + sizeString + "\n");
+	StringRef loadAddrMsgString = StringRef("\nLD: %p B: " + sizeString + "\n");
 	Value *loadAddrMsg = builder.CreateGlobalStringPtr(loadAddrMsgString, "load_addr_msg_string");
 	printfArgs.push_back(loadAddrMsg);
 
@@ -508,7 +512,7 @@ void AdvisorInstr::instrument_store(StoreInst *SI) {
 
 	// print right after the store
 	IRBuilder<> builder(SI);
-	StringRef storeAddrMsgString = StringRef("\nStore at address: %p size in bytes: " + sizeString + "\n");
+	StringRef storeAddrMsgString = StringRef("\nST: %p B: " + sizeString + "\n");
 	Value *storeAddrMsg = builder.CreateGlobalStringPtr(storeAddrMsgString, "store_addr_msg_string");
 	printfArgs.push_back(storeAddrMsg);
 

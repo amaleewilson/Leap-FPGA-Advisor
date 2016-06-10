@@ -21,6 +21,7 @@ message("boost: ${Boost_INCLUDE_DIRS}")
 
 add_llvm_loadable_module( LLVMFPGA-Advisor
   DependenceGraph.cpp
+  ScheduleVisitor.cpp
   FPGA-Advisor-Instrument.cpp
   FPGA-Advisor-Analysis.cpp
   )

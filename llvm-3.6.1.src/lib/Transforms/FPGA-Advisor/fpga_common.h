@@ -83,7 +83,7 @@ namespace fpga {
 // Common helper functions
 // Function: get_basic_block_instance_count
 // Return: the number of instances of this basic block from metadata
-static int get_basic_block_instance_count(BasicBlock *BB) {
+/*static int get_basic_block_instance_count_meta(BasicBlock *BB) {
 	assert(BB);
 	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
 	MDName += BB->getName().str();
@@ -101,9 +101,19 @@ static int get_basic_block_instance_count(BasicBlock *BB) {
 	//BB->getTerminator()->print(*outputLog);
 	//*outputLog << " replication factor: " << repFactor << "\n";
 
+        std::cerr << "Basic block" << BB << " replication factor: " << repFactor << "\n";
+
 	return repFactor;
 }
 
+static void set_basic_block_instance_count_meta(BasicBlock *BB, int value) {
+	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
+	MDName += BB->getName().str();
+	LLVMContext &C = BB->getContext();
+	MDNode *N = MDNode::get(C, MDString::get(C, std::to_string(value)));
+	BB->getTerminator()->setMetadata(MDName, N);
+}
+*/
 // Dependence Graph type:
 // STL list container for OutEdge list
 // STL vector container for vertices
@@ -259,12 +269,19 @@ typedef ExecutionOrder::iterator ExecutionOrder_iterator;
 typedef ExecutionOrderList::iterator ExecutionOrderList_iterator;
 typedef ExecutionOrderListMap::iterator ExecutionOrderListMap_iterator;
 
+typedef struct {
+  int acceleratorLatency;
+  int acceleratorII;
+  int cpuLatency;
+} LatencyStruct;
+
 
 class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionScheduler> {
 	public:
 		static char ID;
                 static void *analyzerLibHandle;
                 static int (*getBlockLatency) (BasicBlock *BB);
+                static int (*getBlockII)      (BasicBlock *BB);
                 static bool useDefault;
 
 		FunctionScheduler() : FunctionPass(ID) {
@@ -288,6 +305,13 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
                       printf("failed to load getBlockLatency\n");  
                       exit(1);
                     }                         
+
+                    getBlockII = (int (*)(BasicBlock* BB)) dlsym(analyzerLibHandle, "getBlockII");
+
+                    if (getBlockII == NULL) {
+                      printf("failed to load getBlockII\n");  
+                      exit(1);
+                    }                         
                   }
                 }
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -300,23 +324,24 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			visit(F);
 			return true;
 		}
-		static int get_basic_block_latency(std::map<BasicBlock *, int> &LT, BasicBlock *BB) {
+
+		static int get_basic_block_latency_accelerator(std::map<BasicBlock *, LatencyStruct> &LT, BasicBlock *BB) {
 			int latency = 0;
 			auto search = LT.find(BB);
 			assert(search != LT.end());
 
-			latency = search->second;
-
-			// determine if the basic block is to be replicated in hardware
-			// if execution on cpu, multiply by some slow down factor FIXME
-			// we can do something more sophisticated here
-			int instanceCount = get_basic_block_instance_count(BB);
-			if (instanceCount <= 0) {
-				latency *= 4;
-			}
-
-			return latency;
+			return search->second.acceleratorLatency;
 		}
+
+
+		static int get_basic_block_latency_cpu(std::map<BasicBlock *, LatencyStruct> &LT, BasicBlock *BB) {
+			int latency = 0;
+			auto search = LT.find(BB);
+			assert(search != LT.end());
+
+			return search->second.cpuLatency;
+		}
+
 		/*
 		int get_basic_block_latency(BasicBlock *BB) {
 			auto search = latencyTable.find(BB);
@@ -412,26 +437,31 @@ class FunctionScheduler : public FunctionPass , public InstVisitor<FunctionSched
 			return latency;
 		}
 
-		std::map<BasicBlock *, int> &getFPGALatencyTable() {
-			return latencyTableFPGA;
+		std::map<BasicBlock *, LatencyStruct> &getFPGALatencyTable() {
+                  return latencyTableFPGA;
 		}
 	
 		void visitBasicBlock(BasicBlock &BB) {
-			int latency = 0;
+			LatencyStruct latencyStruct;
+                        latencyStruct.cpuLatency = 0;    
+
+                        for (auto I = BB.begin(); I != BB.end(); I++) {
+                          latencyStruct.cpuLatency += get_instruction_latency(I);
+                        }
 
                         if (useDefault) {
                           // approximate latency of basic block as number of instructions
-                          for (auto I = BB.begin(); I != BB.end(); I++) {
-                            latency += get_instruction_latency(I);
-                          }
+                          latencyStruct.acceleratorLatency = latencyStruct.cpuLatency;
+                          latencyStruct.acceleratorII = latencyStruct.cpuLatency;
                         } else {
-                          latency = getBlockLatency(&BB); 
-                        }      
+                          latencyStruct.acceleratorLatency = getBlockLatency(&BB); 
+                          latencyStruct.acceleratorII = getBlockII(&BB); 
+                        }                            
 
-			latencyTableFPGA.insert(std::make_pair(BB.getTerminator()->getParent(), latency));
+			latencyTableFPGA.insert(std::make_pair(BB.getTerminator()->getParent(), latencyStruct));
 		}
 	
-		std::map<BasicBlock *, int> latencyTableFPGA;
+		std::map<BasicBlock *, LatencyStruct> latencyTableFPGA;
 	
 }; // end class FunctionScheduler
 
@@ -623,41 +653,20 @@ class FunctionAreaEstimator : public FunctionPass, public InstVisitor<FunctionAr
 
 }; // end class FunctionAreaEstimator
 
+class AdvisorAnalysis;
 
 // Unconstrained scheduler -- does not account for resource limitations in scheduling
 class ScheduleVisitor : public boost::default_dfs_visitor {
 	public:
 		TraceGraphList_iterator graph_ref;
-		std::map<BasicBlock *, int> &LT;
+		std::map<BasicBlock *, LatencyStruct> &LT;
 		int mutable lastCycle;
 		int *lastCycle_ref;
+                AdvisorAnalysis *parent;
 
-		ScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle) {}
+                ScheduleVisitor(TraceGraphList_iterator graph, AdvisorAnalysis* _parent, std::map<BasicBlock *, LatencyStruct> &_LT, int &lastCycle) : graph_ref(graph), parent(_parent), LT(_LT), lastCycle_ref(&lastCycle) {}
 
-		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
-			// find the latest finishing parent
-			// if no parent, start at 0
-			int start = -1;
-			TraceGraph_in_edge_iterator ii, ie;
-			for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
-				start = std::max(start, graph[boost::source(*ii, graph)].minCycEnd);
-			}
-			start += 1;
-
-			int end = start;
-			end += FunctionScheduler::get_basic_block_latency(LT, graph[v].basicblock);
-
-			//std::cerr << "Schedule vertex: (" << v << ") " << graph[v].basicblock->getName().str() <<
-			//			" start: " << start << " end: " << end << "\n";
-			(*graph_ref)[v].set_min_start(start);
-			(*graph_ref)[v].set_min_end(end);
-			(*graph_ref)[v].set_start(start);
-			(*graph_ref)[v].set_end(end);
-
-			// keep track of the last cycle as seen by the scheduler
-			*lastCycle_ref = std::max(*lastCycle_ref, end);
-			//std::cerr << "LastCycle: " << *lastCycle_ref << "\n";
-		}
+                void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph);
 
 }; // end class ScheduleVisitor
 
@@ -665,13 +674,13 @@ class ScheduleVisitor : public boost::default_dfs_visitor {
 class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 	public:
 		TraceGraphList_iterator graph_ref;
-		std::map<BasicBlock *, int> &LT;
+		std::map<BasicBlock *, LatencyStruct> &LT;
 		int mutable lastCycle;
 		int *lastCycle_ref;
 		int *cpuCycle_ref;
-		std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable;
+		std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable;
 
-		ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, int> &_LT, int &lastCycle, int &cpuCycle, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
+                ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int &lastCycle, int &cpuCycle, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
 		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
@@ -692,19 +701,21 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			}
 			start += 1;
 
+                        BasicBlock *BB = (*graph_ref)[v].basicblock;
+
 			// this differs from the maximal parallelism configuration scheduling
 			// in that it also considers resource requirement
 			
 			// first sort the vector
-			auto search = resourceTable.find((*graph_ref)[v].basicblock);
+			auto search = resourceTable->find(BB);
 			//assert(search != resourceTable.end());
-			if (search == resourceTable.end()) {
-				// if not found, could mean that either
-				// a) basic block to be executed on cpu
-				// b) resource table not initialized properly o.o
-				std::cerr << "Basic block " << (*graph_ref)[v].name << " not found in resource table.\n";
-				assert(0);
-			}
+			//DEBUG(if (search == resourceTable.end()) {
+			//	// if not found, could mean that either
+			//	// a) basic block to be executed on cpu
+			//	// b) resource table not initialized properly o.o
+			//	std::cerr << "Basic block " << (*graph_ref)[v].name << " not found in resource table.\n";
+			//	assert(0);
+                        //  })
 
 			bool cpu = (search->second).first;
 			int resourceReady = UINT_MAX;
@@ -719,8 +730,14 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			start = std::max(start, resourceReady);
 
 			int end = start;
-			end += FunctionScheduler::get_basic_block_latency(LT, (*graph_ref)[v].basicblock);
-			
+            
+                        // Assign endpoint based on cpu or accelerator.
+                        if(cpu) {
+  			  end += FunctionScheduler::get_basic_block_latency_cpu(LT, BB);
+			} else {
+  			  end += FunctionScheduler::get_basic_block_latency_accelerator(LT, BB);
+                        }
+
 			// update the occupied resource with the new end cycle
 			if (cpu) {
 				*cpuCycle_ref = end;
@@ -764,15 +781,21 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 			AU.addRequired<FunctionScheduler>();
 			AU.addRequired<FunctionAreaEstimator>();
 		}
-  AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000) {}
+                AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000), bbInstanceCounts() {}
 		bool runOnModule(Module &M);
 		void visitFunction(Function &F);
 		void visitBasicBlock(BasicBlock &BB);
 		void visitInstruction(Instruction &I);
-		//static int get_basic_block_instance_count(BasicBlock *BB);
-
+                int  get_basic_block_instance_count(BasicBlock *BB);
+		void set_basic_block_instance_count(BasicBlock *BB, int value);
+		void load_basic_block_instance_count(BasicBlock *BB);
+		void flush_basic_block_instance_count(BasicBlock *BB);
+                 
 	private:
-   	        unsigned areaConstraint;
+   	        unsigned areaConstraint;                                
+
+                std::unordered_map<BasicBlock*,int> bbInstanceCounts; 
+
 		// functions
 		void find_recursive_functions(Module &M);
 		void does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack);
@@ -796,7 +819,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool process_store(const std::string &line, Function *function, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor lastVertex);
 		bool process_basic_block_entry(const std::string &line, int &ID, TraceGraphList_iterator lastTraceGraph, TraceGraph_vertex_descriptor &lastVertex, ExecutionOrderList_iterator lastExecutionOrder);
 		bool process_function_entry(const std::string &line, Function **function, TraceGraphList_iterator &latestTraceGraph, TraceGraph_vertex_descriptor &latestVertex, ExecutionOrderList_iterator &latestExecutinoOrder, std::stack<FunctionExecutionRecord> &stack);
-		void getCPULatencyTable(Function *F, std::map<BasicBlock *, int> *LT, ExecutionOrderList &executionOrderList, TraceGraphList &executionGraphList);
+		void getCPULatencyTable(Function *F, std::map<BasicBlock *, LatencyStruct> *LT, ExecutionOrderList &executionOrderList, TraceGraphList &executionGraphList);
 
 		bool check_trace_sanity();
 		BasicBlock *find_basicblock_by_name(std::string funcName, std::string bbName);
@@ -820,16 +843,16 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
 		void find_optimal_configuration_for_all_calls(Function *F, unsigned &cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
 		bool incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
-		void set_basic_block_instance_count(BasicBlock *BB, int value);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
+		void update_transition(BasicBlock *BB);
 		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-		unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly);
-		void initialize_resource_table(Function *F, std::map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > &resourceTable, bool cpuOnly);
+  unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
+		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly);
 		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
@@ -879,8 +902,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 // TraceGraph custom vertex writer for execution trace graph output to dotfile
 template <class TraceGraph>
 class TraceGraphVertexWriter {
+        AdvisorAnalysis *parent;
 	public:
-		TraceGraphVertexWriter(TraceGraph& _graph) : graph(_graph) {}
+                TraceGraphVertexWriter(TraceGraph& _graph, AdvisorAnalysis *_parent) : graph(_graph), parent(_parent) {}
 		template <class TraceGraph_vertex_descriptor>
 		void operator()(std::ostream& out, const TraceGraph_vertex_descriptor &v) const {
 			/*
@@ -890,8 +914,8 @@ class TraceGraphVertexWriter {
 			*/
 			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
 			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_start() << "</td></tr>";
-			//if (AdvisorAnalysis::get_basic_block_instance_count(graph[v].basicblock) > 0) {
-			if (get_basic_block_instance_count(graph[v].basicblock) > 0) {
+			if (parent->get_basic_block_instance_count(graph[v].basicblock) > 0) {
+			//if (get_basic_block_instance_count_meta(graph[v].basicblock) > 0) {
 				out	<< "<tr><td bgcolor=\"#FFFF33\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
 			} else {
 				out	<< "<tr><td bgcolor=\"#FFFFFF\" border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";
