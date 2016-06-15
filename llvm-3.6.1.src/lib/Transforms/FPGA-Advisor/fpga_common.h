@@ -723,9 +723,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 			if (cpu) { // cpu resource flag
 				resourceReady = *cpuCycle_ref;
 			} else {
-                          //std::sort(resourceVector.begin(), resourceVector.end());
                           resourceReady = *(std::min_element(resourceVector.begin(), resourceVector.end()));
-                          //resourceReady = *(std::min_element(resourceVector));//.front();
 			}
 
 			start = std::max(start, resourceReady);
