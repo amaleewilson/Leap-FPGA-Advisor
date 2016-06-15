@@ -2886,19 +2886,22 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
         unsigned finalDeltaLatency = 0;
         unsigned finalDeltaArea = 0;
 
+        std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > execRoots;
+
         // this code must go away. 
 	// need to loop through all calls to function to get total latency
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
-		std::vector<TraceGraph_vertex_descriptor> roots;
-		roots.clear();
-		find_root_vertices(roots, fIt);
- 
+                std::vector<TraceGraph_vertex_descriptor>* roots = new std::vector<TraceGraph_vertex_descriptor>;
+		roots->clear();
+		find_root_vertices(*roots, fIt);
+                execRoots[&(*fIt)] = roots; 
+
                 std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
                 resourceTable.clear();
                 initialize_resource_table(F, &resourceTable, false);
 
-		initialLatency += schedule_with_resource_constraints(roots, fIt, F, false, &resourceTable);
+		initialLatency += schedule_with_resource_constraints(*roots, fIt, F, false, &resourceTable);
 	}
 
 	// check to see if we should abandon search and opt for cpu only implementation
@@ -2983,10 +2986,10 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
 			for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 				fIt != executionGraph[F].end(); fIt++) {
-				std::vector<TraceGraph_vertex_descriptor> roots;
-				roots.clear();
-				find_root_vertices(roots, fIt);
-
+				std::vector<TraceGraph_vertex_descriptor> roots = *execRoots[&(*fIt)]; ;
+				//roots.clear();
+				//find_root_vertices(roots, fIt);
+                                //roots 
 				// need to update edge weights before scheduling in case any blocks
 				// become implemented on cpu
 				//update_transition_delay(fIt);
