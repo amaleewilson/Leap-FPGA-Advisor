@@ -221,7 +221,7 @@ typedef struct {
 		// cycStart and cycEnd are the actual schedules
 		int mutable cycStart;
 		int mutable cycEnd;
-		unsigned long long cpuCycles;
+		int64_t cpuCycles;
 		std::string name;
 		// a memory access tuple for each store/load
 		// first field stores the starting address, second field stores the width of access in bytes
@@ -676,22 +676,22 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 		TraceGraphList_iterator graph_ref;
 		std::map<BasicBlock *, LatencyStruct> &LT;
 		int mutable lastCycle;
-		int *lastCycle_ref;
-		int *cpuCycle_ref;
+		int64_t *lastCycle_ref;
+		int64_t *cpuCycle_ref;
 		std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable;
 
-                ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int &lastCycle, int &cpuCycle, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
+                ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int64_t &lastCycle, int64_t &cpuCycle, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
 		void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) const {
 			// find the latest finishing parent
 			// if no parent, start at 0
-			int start = -1;
+			int64_t start = -1;
 			TraceGraph_in_edge_iterator ii, ie;
 			for (boost::tie(ii, ie) = boost::in_edges(v, (*graph_ref)); ii != ie; ii++) {
 				TraceGraph_vertex_descriptor s = boost::source(*ii, (*graph_ref));
 				//TraceGraph_vertex_descriptor t = boost::target(*ii, (*graph_ref));
 				//std::cerr << (*graph_ref)[s].ID << " -> " << (*graph_ref)[t].ID << "\n";
-				int transitionDelay = (int) boost::get(boost::edge_weight_t(), (*graph_ref), *ii);
+				int64_t transitionDelay = (int) boost::get(boost::edge_weight_t(), (*graph_ref), *ii);
 
 				//std::cerr << "MINIMUM END CYCLE FOR EDGE: " << (*graph_ref)[s].get_end() << "\n";
 				//std::cerr << "TRANSITION DELAY: " << transitionDelay << "\n";
@@ -718,7 +718,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
                         //  })
 
 			bool cpu = (search->second).first;
-			int resourceReady = UINT_MAX;
+			int64_t resourceReady = UINT_MAX;
 			std::vector<unsigned> &resourceVector = search->second.second;
 			if (cpu) { // cpu resource flag
 				resourceReady = *cpuCycle_ref;
@@ -728,7 +728,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 
 			start = std::max(start, resourceReady);
 
-			int end = start;
+			int64_t end = start;
             
                         // Assign endpoint based on cpu or accelerator.
                         if(cpu) {
@@ -767,6 +767,18 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		ExecutionOrderList_iterator executionOrder;
 	} FunctionExecutionRecord;
 
+        typedef struct {
+          int      blockCount;
+          uint64_t latencyStart;
+          uint64_t latencyFinish;
+          double   grad;
+        } GradientPoint;
+
+        typedef struct {
+          std::vector<GradientPoint> gradientPoints;
+          double gradientCoefficient;
+        } Gradient;
+
 	public:
 		static char ID;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
@@ -792,6 +804,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
                  
 	private:
    	        unsigned areaConstraint;                                
+                std::vector<double> thresholds;
 
                 std::unordered_map<BasicBlock*,int> bbInstanceCounts; 
 
@@ -841,17 +854,18 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
 		void find_optimal_configuration_for_all_calls(Function *F, unsigned &cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
-		bool incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
+                bool incremental_gradient_descent(Function *F, std::unordered_map<BasicBlock*, int> &removeBBs, int64_t &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
 		void update_transition(BasicBlock *BB);
 		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
+                bool decrease_basic_block_instance_count_and_update_transition(std::unordered_map<BasicBlock *, int > &removeBBs);
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-  unsigned schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
-		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly);
+                uint64_t schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
+		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly); 
 		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);
@@ -892,6 +906,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		ExecGraph executionGraph;
 
 		ExecutionOrderListMap executionOrderListMap;
+
+                std::unordered_map<BasicBlock *, Gradient*> gradients;
 
 		//DepGraph depGraph;
 

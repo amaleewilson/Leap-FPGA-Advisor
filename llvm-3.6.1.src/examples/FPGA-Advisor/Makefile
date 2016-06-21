@@ -107,7 +107,7 @@ dep:
 # fpga advisor analysis
 ana: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
-	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -area-constraint=500 -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
+	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -rapid-convergence=5 -area-constraint=500 -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
 
 # generate static dependence graph

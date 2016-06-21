@@ -202,7 +202,7 @@ void AdvisorInstr::instrument_basic_block(BasicBlock *BB) {
 
 	IRBuilder<> builder(BB->getFirstInsertionPt());
 
-	StringRef bbMsgString = StringRef("\nBasicBlock: %s Function: %s\n");
+	StringRef bbMsgString = StringRef("\nB: %s F: %s\n");
 	Value *bbMsg = builder.CreateGlobalStringPtr(bbMsgString, "bb_msg_string");
 	Value *bbNameMsg = builder.CreateGlobalStringPtr(BB->getName(), "bb_name_string");
 	Value *funcNameMsg = builder.CreateGlobalStringPtr(BB->getParent()->getName(), "func_name_string");

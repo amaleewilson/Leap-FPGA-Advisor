@@ -73,6 +73,7 @@
 #include "fpga_common.h"
 #include "stack_trace.h"
 
+#include <map>
 #include <fstream>
 #include <fstream>
 #include <regex>
@@ -124,7 +125,7 @@ std::map<BasicBlock *, LatencyStruct> *LT; // filled in by FunctionScheduler - s
 //std::map<BasicBlock *, int> *LTCPU; // filled in after getting dynamic trace
 // area table
 std::map<BasicBlock *, int> *AT;
-int cpuCycle;
+int64_t cpuCycle; // This will be a problem for threading.  
 std::vector<unsigned long long> startTime;
 
 //===----------------------------------------------------------------------===//
@@ -146,6 +147,8 @@ static cl::opt<unsigned int> TraceThreshold("trace-threshold", cl::desc("Maximum
 		cl::Hidden, cl::init(UINT_MAX)
 );
 static cl::opt<unsigned int> AreaConstraint("area-constraint", cl::desc("Set the area constraint"),
+		cl::Hidden, cl::init(0));
+static cl::opt<unsigned int> RapidConvergence("rapid-convergence", cl::desc("specify number of steps to use in fast convergence method"),
 		cl::Hidden, cl::init(0));
 static cl::opt<unsigned> UserTransitionDelay("transition-delay", cl::desc("Set the fpga to cpu transition delay baseline"),
 		cl::Hidden, cl::init(0));
@@ -428,6 +431,10 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	unsigned fpgaOnlyLatency = UINT_MAX;
 	unsigned fpgaOnlyArea = 0;
 
+	if (AreaConstraint > 0) {
+		areaConstraint = AreaConstraint;
+	}
+
 	*outputLog << "Examine function: " << F->getName() << "\n";
 	// Find constructs that are not supported by HLS
 	if (has_unsynthesizable_construct(F)) {
@@ -484,6 +491,28 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
         prune_basic_block_configuration_to_device_area(F);
         std::cerr << "Pruned basic blocks: " << get_total_basic_block_instances(F) << "\n";
         *outputFile << "Pruned basic blocks: " << get_total_basic_block_instances(F) << "\n";
+
+        unsigned pruned_area = get_area_requirement(F);       
+        unsigned area_delta = pruned_area - areaConstraint;
+
+        // adjust this factor for faster or slower termination (and lesser/greater quality of results)
+        int pruning_steps = RapidConvergence;
+       
+        double area_root = pow( (double) area_delta , 1.0/(double) pruning_steps);
+
+        std::cerr << "Pruned area: " << pruned_area << std::endl;
+        std::cerr << "areaConstraint: " << areaConstraint << std::endl;
+        std::cerr << "Area delta is: " << area_delta << std::endl;
+        std::cerr << "Area root is: " << area_root << std::endl;
+
+        // Construct a series of steps to permit gradual elimination of area. 
+        double baseArea = 1.00;
+        for ( int i = 0; i < pruning_steps; i++) {
+          thresholds.push_back(areaConstraint + baseArea);  // Encode the difference as the amount of area we must reduce. 
+          std::cerr << "Pushing threshold: " << (areaConstraint + baseArea) << std::endl;
+          baseArea = baseArea * area_root;
+        }
+
 	// by this point, the basic blocks have been annotated by the maximal
 	// legal replication factor
 	// build a framework that is able to methodically perturb the basic block
@@ -1163,7 +1192,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 		// 3. Return from: <func name>
 		// 4. Store at address: <addr start> size in bytes: <size>
 		// 5. Load from address: <addr start> size in bytes: <size>
-               if (std::regex_match(line, std::regex("(BasicBlock: )(.*)( Function: )(.*)"))) {
+               if (std::regex_match(line, std::regex("(B: )(.*)( F: )(.*)"))) {
 			if (!process_basic_block_entry(line, ID, latestTraceGraph, lastVertex, latestExecutionOrder)) {
 				*outputLog << "process basic block entry: FAILED.\n";
 				return false;
@@ -1351,7 +1380,7 @@ bool AdvisorAnalysis::process_store(const std::string &line, Function *function,
 
 	// separate line by space to get keywords
 	//=---------------------------------=//
-	// Store<space>at<space>address:<space>addr<space>size<space>in<space>bytes:<space>size\n
+	// ST:<space>addr<space>B:<space>size\n
 	// separate out string by tokens
 	char *pch = std::strtok(&lineCopy[4], delimiter);
 	std::string addrString(pch);
@@ -1396,11 +1425,11 @@ bool AdvisorAnalysis::process_basic_block_entry(const std::string &line, int &ID
 
 	// separate line by space to get keywords
 	//=----------------------------=//
-	// BasicBlock:<space>bbName<space>Function:<space>funcName\n
+	// B:<space>bbName<space>F:<space>funcName\n
 	// separate out string by tokens
-	char *pch = std::strtok(&lineCopy[0], delimiter);
+	char *pch = std::strtok(&lineCopy[3], delimiter);
 	// BasicBlock:
-	pch = strtok(NULL, delimiter);
+	//pch = strtok(NULL, delimiter);
 	// bbName
 	std::string bbString(pch);
 
@@ -1809,7 +1838,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
 
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph,
 		ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
-	*outputLog << __func__ << " for function " << F->getName() << "\n";
+        DEBUG(*outputLog << __func__ << " for function " << F->getName() << "\n");
 	//std::cerr << __func__ << " for function " << F->getName().str() << "\n";
 
 	print_execution_order(execOrder);
@@ -2756,9 +2785,6 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 
 	// default hard-coded area constraint that means nothing
 
-	if (AreaConstraint > 0) {
-		areaConstraint = AreaConstraint;
-	}
 
 	bool done = false;
 
@@ -2778,24 +2804,31 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
         //  load_basic_block_instance_count(BB);
         //}
 
+        // Build up the gradient table. 
+
+        for (auto BB = F->begin(); BB != F->end(); BB++) {
+          gradients[BB] = new Gradient();
+        } 
+
+        
 	while (!done) {
 		ConvergenceCounter++; // for stats
 		std::cerr << BOLDMAGENTA << "=" << RESET; // progress bar
                 
 		area = get_area_requirement(F);
 		if (area > areaConstraint) {
-			*outputLog << "Area constraint violated. Reduce area.\n";
-			BasicBlock *removeBB;
-			int deltaDelay = INT_MAX;
+                        std::cerr << "Area constraint violated. Reduce area.\n\n\n\n\n";
+                        std::unordered_map<BasicBlock *, int> removeBB;
+			int64_t deltaDelay = INT_MAX;
 			bool cpuOnly = !incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 			if (cpuOnly) {
 				// decrement all basic blocks until cpu-only
 				*outputLog << "[step] Remove all basic blocks\n";
-				decrement_all_basic_block_instance_count_and_update_transition(F);
+				decrement_all_basic_block_instance_count_and_update_transition(F);                      
 			} else {
 				//decrement_basic_block_instance_count(removeBB);
-				*outputLog << "[step] Remove basic block: " << removeBB->getName() << "\n";
-				decrement_basic_block_instance_count_and_update_transition(removeBB);
+
+				decrease_basic_block_instance_count_and_update_transition(removeBB);                               
 
 				// printout
 				*outputLog << "Current basic block configuration.\n";
@@ -2807,15 +2840,14 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 			// 2. there are no blocks to remove
 			
 			*outputLog << "Area constraint satisfied, remove non performing blocks.\n";
-			BasicBlock *removeBB = NULL;
-			int deltaDelay = INT_MIN;
+                        std::unordered_map<BasicBlock *, int> removeBB;
+			int64_t deltaDelay = INT_MIN;
 			incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 
 			// only remove block if it doesn't negatively impact delay
-			if (deltaDelay >= 0 && removeBB != NULL) {
-				//decrement_basic_block_instance_count(removeBB);
-				*outputLog << "[step+] Remove basic block: " << removeBB->getName() << "\n";
-				decrement_basic_block_instance_count_and_update_transition(removeBB);
+			if (deltaDelay >= 0 && (removeBB.begin() != removeBB.end())) {
+				//decrement_basic_block_instance_count(removeBB);		
+				decrease_basic_block_instance_count_and_update_transition(removeBB);
 			}
 
 			// printout
@@ -2827,8 +2859,8 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 				done = true;
 			}
 
-			if (removeBB == NULL) {
-				done = true;
+			if (removeBB.begin() == removeBB.end()) {
+                          done = true;
 			}
 
 		}
@@ -2873,20 +2905,24 @@ uint64_t rdtsc(){
 // Function will iterate through each basic block which has a hardware instance of more than 0
 // to determine the change in delay with the removal of that basic block and finds the basic block
 // whose contribution of delay/area is the least (closest to zero or negative)
-bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB, int &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
+bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_map<BasicBlock *, int> &removeBBs, int64_t &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
 	unsigned initialArea = get_area_requirement(F);
 	*outputLog << "Initial area: " << initialArea << "\n";
 	unsigned initialLatency = 0;
 
+        BasicBlock *removeBB = NULL;
+
         uint64_t start = rdtsc();  
 
-        unsigned finalArea = initialArea;
-        unsigned finalLatency = initialLatency;
+        uint64_t finalArea = initialArea;
+        uint64_t finalLatency = initialLatency;
 
-        unsigned finalDeltaLatency = 0;
-        unsigned finalDeltaArea = 0;
+        int64_t finalDeltaLatency = 0;
+        int64_t finalDeltaArea = 0;
 
         std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > execRoots;
+
+        std::map<BasicBlock *, double> gradient;
 
         // this code must go away. 
 	// need to loop through all calls to function to get total latency
@@ -2927,8 +2963,8 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 	//   point a is the point at which the projected performance intersects with the
 	//   actual performance, to the left of point a, the performance of a cpu-accelerator
 	//   mix will always perform worse than the cpu only
-	unsigned B = fpgaOnlyLatency;
-	unsigned dA = fpgaOnlyArea - initialArea;
+	uint64_t B = fpgaOnlyLatency;
+	uint64_t dA = fpgaOnlyArea - initialArea;
 
 	float m = (cpuOnlyLatency - fpgaOnlyLatency) / fpgaOnlyArea;
 	float projectedPerformance = (m * dA) + B;
@@ -2970,7 +3006,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
                           
                         DEBUG(*outputLog << "Performing removal of basic block " << BB->getName() << "\n");
 			// need to iterate through all calls made to function
-			unsigned latency = 0;
+			uint64_t latency = 0;
 
                         // Decrement by one. 
 
@@ -3012,6 +3048,14 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 			} else {
 				marginalPerformance = deltaLatency / deltaArea;
 			}
+                       
+                        GradientPoint gPoint;
+                        gPoint.blockCount = count; 
+                        gPoint.grad = marginalPerformance;
+
+                        gradients[BB]->gradientPoints.push_back(gPoint);
+
+                        gradient[BB] = marginalPerformance;
 
 			assert(deltaArea >= 0);
 			DEBUG(*outputLog << "marginal performance/area of block " << marginalPerformance << "\n");
@@ -3037,7 +3081,121 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&rem
 
         uint64_t finish = rdtsc();  
 
-        std::cerr << "IGD Removing BB: " << removeBB << " area: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
+        // Decide how far to step in the gradient direction depends on where we are.  
+          
+        
+        std::vector<double> coefs; 
+        double alpha;
+
+        if (RapidConvergence && (thresholds.size() > 0) && (initialArea > areaConstraint)) {
+          double area_threshold; 
+          double target_threshold;
+          do {
+            target_threshold = thresholds.back();
+            area_threshold = initialArea - target_threshold;
+            thresholds.pop_back();
+          } while ((area_threshold < 0) && (thresholds.size() > 0));         
+           
+          // if we ran out of thresholds, just remove one block.
+          if (area_threshold < 0) { 
+            area_threshold = 1.0;
+          }
+
+          // Now we must solve the linear combination to reduce area 
+          // by the required amount. We view the gradient coeffiencients 
+          // as a determining the ratio of blocks to remove. 
+          double sum = 0.0;
+
+          for(auto it = gradient.begin(); it != gradient.end(); it++) {
+            coefs.push_back(1/it->second);
+            sum += FunctionAreaEstimator::get_basic_block_area(*AT, it->first)/it->second;
+          }
+                    
+          alpha = area_threshold / sum;           
+     
+          std::cerr << "Alpha: " << alpha << "\n";         
+          std::cerr << "initial area: " << initialArea << "\n";         
+          std::cerr << "target  area: " << target_threshold << "\n";         
+          std::cerr << "Area_threshold: " << area_threshold << "\n";         
+          std::cerr << "Sum: " << sum << "\n";         
+
+          // If the convergence distance is very small, we may not
+          // find a block to remove.  We track this and force the
+          // removal of the marginal block if no other blocks are
+          // removed.
+          bool foundNonZero = false;
+
+          // Multiply coefs to obtain block counts. Need to adjust alpha up to deal with need to floor. 
+          double area_removed_floor = 0;
+          double area_removed = 0;
+
+          // this doesn't need to be an iterative loop, probably. 
+          do {
+        
+            auto coefIt = coefs.begin();
+            for(auto it = gradient.begin(); it != gradient.end(); it++) {                                    
+
+              removeBBs[it->first] = floor(*coefIt * alpha);
+              
+              if (floor(*coefIt * alpha) > .5) {
+                foundNonZero = true;
+              }
+          
+              area_removed_floor += floor(*coefIt * alpha) * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+              area_removed += *coefIt * alpha * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+
+              coefIt++;
+            }
+
+            std::cerr << "Eliminated " << area_removed_floor << " units of area rounded from " << area_removed << "needed: "<< area_threshold << std::endl;
+            alpha = alpha * 1.05;
+          } while ( area_removed_floor < area_threshold);
+
+
+          alpha = alpha / 1.05;
+
+          area_removed_floor = 0;
+          area_removed = 0;
+            
+          auto coefIt = coefs.begin();
+          for(auto it = gradient.begin(); it != gradient.end(); it++) {                                    
+            removeBBs[it->first] = floor(*coefIt * alpha);
+              
+            if (floor(*coefIt * alpha) > .5) {
+              foundNonZero = true;
+            }
+
+            std::cerr << it->first->getName().str() << ", " << it->second << ", " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << ", " << get_basic_block_instance_count(it->first) << " removing " << floor(*coefIt * alpha) << " -> " << (get_basic_block_instance_count(it->first) - floor(*coefIt * alpha))  << "remain\n";
+            coefIt++;
+            area_removed_floor += floor(*coefIt * alpha) * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+            area_removed += *coefIt * alpha * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+
+          }
+
+
+          // Ensure that we remove at least one block. Given that we are bumping alpha, this may not be needed.
+          if (!foundNonZero) {
+            removeBBs[removeBB] = 1;
+          }
+
+        } else {
+
+          // Just do one step here. 
+          if(removeBB != NULL) {
+            removeBBs[removeBB] = 1;
+          }
+
+          for(auto it = gradient.begin(); it != gradient.end(); it++) {
+            std::cerr << it->first->getName().str() << ", " << it->second << ", " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << ", " << get_basic_block_instance_count(it->first) << '\n';
+          }
+
+        }
+
+
+        
+       
+
+        std::cerr << "IGD Removing BB: " << removeBB->getName().str() << " ( " << removeBB << " ) area: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
 
 	return true; // not going to cpu only solution
 }
@@ -3191,7 +3349,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 // and the resource constraints embedded in the IR as metadata to determine
 // the latency of the particular function call instance represented by this
 // execution trace
-unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, 
+uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, 
                                                              TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable) {
         DEBUG(*outputLog << __func__ << "\n");
 
@@ -3213,7 +3371,7 @@ unsigned AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	// reset the cpu free cycle global!
 	cpuCycle = -1;
 
-	int lastCycle = -1;
+	int64_t lastCycle = -1;
 
 	//===----------------------------------------------------===//
 	// Use breadth first search to perform the scheduling
@@ -3333,6 +3491,35 @@ bool AdvisorAnalysis::decrement_basic_block_instance_count_and_update_transition
 	}
 
 	return true;
+}
+
+bool AdvisorAnalysis::decrease_basic_block_instance_count_and_update_transition(std::unordered_map<BasicBlock *, int> &removeBBs) {
+
+  std::unordered_map<Function*, int> updateFunctions; 
+
+  for(auto it = removeBBs.begin(); it != removeBBs.end(); it++) {
+    BasicBlock *block = it->first;
+    int count = it->second;
+    
+    int origCount = get_basic_block_instance_count(block);
+
+    int newCount = std::max(0, origCount - count);
+
+    if (newCount == 0) {
+      updateFunctions[block->getParent()] = 0;
+    }
+
+    set_basic_block_instance_count(block, newCount);
+  }
+
+  // If we removed all instances of any block, then update the transition delays
+  for(auto it = updateFunctions.begin(); it != updateFunctions.end(); it++) {
+    for (TraceGraphList_iterator fIt = executionGraph[it->first].begin(); fIt != executionGraph[it->first].end(); fIt++) {
+      update_transition_delay(fIt);
+    }
+  }
+
+  return true;
 }
 
 
