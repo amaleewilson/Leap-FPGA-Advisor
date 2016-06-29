@@ -80,6 +80,11 @@
 #include <time.h>
 #include <exception>
 
+// include tbb components 
+#include "tbb/task.h"
+#include "tbb/task_group.h"
+#include "tbb/task_scheduler_init.h"
+
 //#define DEBUG_TYPE "fpga-advisor-analysis"
 #define DEBUG_TYPE "fpga-advisor"
 
@@ -150,6 +155,10 @@ static cl::opt<unsigned int> AreaConstraint("area-constraint", cl::desc("Set the
 		cl::Hidden, cl::init(0));
 static cl::opt<unsigned int> RapidConvergence("rapid-convergence", cl::desc("specify number of steps to use in fast convergence method"),
 		cl::Hidden, cl::init(0));
+
+static cl::opt<unsigned int> UseThreads("use-threads", cl::desc("specify number of threads to use in gradient descent"),
+		cl::Hidden, cl::init(1));
+
 static cl::opt<unsigned> UserTransitionDelay("transition-delay", cl::desc("Set the fpga to cpu transition delay baseline"),
 		cl::Hidden, cl::init(0));
 
@@ -178,6 +187,8 @@ STATISTIC(ConvergenceCounter, "Number of steps taken to converge in gradient des
 //===----------------------------------------------------------------------===//
 // AdvisorAnalysis Class functions
 //===----------------------------------------------------------------------===//
+
+AdvisorAnalysis::AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000), bbInstanceCounts(), init(UseThreads) {}
 
 // Function: runOnModule
 // This is the main analysis pass
@@ -495,6 +506,11 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
         unsigned pruned_area = get_area_requirement(F);       
         unsigned area_delta = pruned_area - areaConstraint;
 
+        // Do not apply rapid convergence if pruning arrived at an optimal solution.
+        if (pruned_area < areaConstraint) {
+          RapidConvergence = 0;
+        }
+
         // adjust this factor for faster or slower termination (and lesser/greater quality of results)
         int pruning_steps = RapidConvergence;
        
@@ -509,7 +525,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
         double baseArea = 1.00;
         for ( int i = 0; i < pruning_steps; i++) {
           thresholds.push_back(areaConstraint + baseArea);  // Encode the difference as the amount of area we must reduce. 
-          std::cerr << "Pushing threshold: " << (areaConstraint + baseArea) << std::endl;
+          DEBUG(std::cerr << "Pushing threshold: " << (areaConstraint + baseArea) << std::endl);
           baseArea = baseArea * area_root;
         }
 
@@ -2200,9 +2216,21 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 // Function: initialize_basic_block_instance_count
 // Initializes the replication factor metadata for each basic block in function to zero
 void AdvisorAnalysis::initialize_basic_block_instance_count(Function *F) {
-	for (auto BB = F->begin(); BB != F->end(); BB++) {
-		set_basic_block_instance_count(BB, 0);
-	}
+
+  // first we must set up the threadpool structures. 
+  for (auto BB = F->begin(); BB != F->end(); BB++) {
+    threadPoolInstanceCounts[BB] = new std::unordered_map<BasicBlock*, int>();
+    // Initialize to zero, since we used the thread-safe find in the set method.
+    // Find needs something to 'find'.
+    for (auto zeroBB = F->begin(); zeroBB != F->end(); zeroBB++) {
+      threadPoolInstanceCounts[BB]->insert(std::make_pair(zeroBB,0));
+    }
+  }
+
+  for (auto BB = F->begin(); BB != F->end(); BB++) {
+    // Initialize both the main count structure and the thread pool structure.      
+    set_basic_block_instance_count(BB, 0);       
+  }
        
 }
 
@@ -2799,18 +2827,17 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	std::cerr << F->getName().str() << "\n";
 	std::cerr << "Progress bar |";
 
-        // Load up basic block counts from metadata
-	//for (auto BB = F->begin(); BB != F->end(); BB++) {
-        //  load_basic_block_instance_count(BB);
-        //}
 
-        // Build up the gradient table. 
+        // Build up various basic-block level data structures
 
         for (auto BB = F->begin(); BB != F->end(); BB++) {
           gradients[BB] = new Gradient();
+          std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable = new std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >();
+          resourceTable->clear();
+          initialize_resource_table(F, resourceTable, false);
+          threadPoolResourceTables[BB] = resourceTable;
         } 
 
-        
 	while (!done) {
 		ConvergenceCounter++; // for stats
 		std::cerr << BOLDMAGENTA << "=" << RESET; // progress bar
@@ -2828,8 +2855,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 			} else {
 				//decrement_basic_block_instance_count(removeBB);
 
-				decrease_basic_block_instance_count_and_update_transition(removeBB);                               
-
+				decrease_basic_block_instance_count_and_update_transition(removeBB);                                                               
 				// printout
 				*outputLog << "Current basic block configuration.\n";
 				print_basic_block_configuration(F, outputLog);
@@ -2868,11 +2894,6 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 
 	std::cerr << ">\n"; // terminate progress bar
 
-        // Dump basic block counts to metadata
-	//for (auto BB = F->begin(); BB != F->end(); BB++) {
-        //  flush_basic_block_instance_count(BB);
-        //}
-
 	// print out final scheduling results and area
 	unsigned finalLatency = 0;
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
@@ -2885,7 +2906,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
     	        resourceTable.clear();
     	        initialize_resource_table(F, &resourceTable, false);
 
-		finalLatency += schedule_with_resource_constraints(roots, fIt, F, false, &resourceTable);
+		finalLatency += schedule_with_resource_constraints(&roots, fIt, F, false, &resourceTable);
 	}
 	
 	unsigned finalArea = get_area_requirement(F);
@@ -2937,7 +2958,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
                 resourceTable.clear();
                 initialize_resource_table(F, &resourceTable, false);
 
-		initialLatency += schedule_with_resource_constraints(*roots, fIt, F, false, &resourceTable);
+		initialLatency += schedule_with_resource_constraints(roots, fIt, F, false, &resourceTable);
 	}
 
 	// check to see if we should abandon search and opt for cpu only implementation
@@ -2984,100 +3005,65 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
         resourceTable.clear();
         initialize_resource_table(F, &resourceTable, false);
 
-	// try removing each basic block
+        // We need to maintain a list of those blocks which change latency.
+        std::deque<BasicBlock*> blocks;
+
+        //{
+        //  std::unique_lock<std::mutex> lk(threadPoolMutex);
+        //  std::cerr << "Main Table " << std::endl;
+        //  for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {    
+        //    std::cerr << "Block: " << itRT->first->getName().str() << " count: " << itRT->second.second.size() << std::endl;
+        //  }
+        // }
+
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		//if (decrement_basic_block_instance_count(BB)) {
                 auto search = resourceTable.find(BB);
                 std::vector<unsigned> &resourceVector = search->second.second;                
-                int count2 = get_basic_block_instance_count(BB);
                 int count = resourceVector.size();
-                assert(count == count2);
 
-                // this is also pretty inefficient. Fix it too. 
-		if (count > 0) {
-                        // Provisionally remove block
-                        decrement_basic_block_instance_count(BB);
-                        // transition costs only happen if we go from accelerator impl. 
-                        // to software impl. 
-                        if(count == 1) {
-                          update_transition(BB);
-                        }
-                        resourceVector.pop_back();
+                if(count == 1) {
+                  blocks.push_back(BB);                 
+                } else if (count > 1) {
+                  blocks.push_front(BB);                 
+                }
+
+                // set up the gradient hash, since we cannot insert
+                // while threading.
+                if(count > 0) {
+                  gradient[BB] = 0;
+                }
                           
-                        DEBUG(*outputLog << "Performing removal of basic block " << BB->getName() << "\n");
-			// need to iterate through all calls made to function
-			uint64_t latency = 0;
+        }
 
-                        // Decrement by one. 
+	// try removing each basic block
+	for (auto itBB = blocks.begin(); itBB != blocks.end(); itBB++) {
+		//if (decrement_basic_block_instance_count(BB)) {
+                BasicBlock *BB = *itBB;
+                auto search = resourceTable.find(BB);
+                std::vector<unsigned> &resourceVector = search->second.second;                
+                int count = resourceVector.size();
 
-
-                        // reset all values to zero. 
-                        // Really we should do our own maintainence here so as to reduce overhead. 
-                        // One could even have a pool of these things reinitialized by a worker thread. 
-                        for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {
-                          for (auto itRV = itRT->second.second.begin(); itRV != itRT->second.second.end(); itRV++) {
-                            *itRV = 0;
-                          }
-                        }
-
-			for (TraceGraphList_iterator fIt = executionGraph[F].begin();
-				fIt != executionGraph[F].end(); fIt++) {
-				std::vector<TraceGraph_vertex_descriptor> roots = *execRoots[&(*fIt)]; ;
-				//roots.clear();
-				//find_root_vertices(roots, fIt);
-                                //roots 
-				// need to update edge weights before scheduling in case any blocks
-				// become implemented on cpu
-				//update_transition_delay(fIt);
-
-				latency += schedule_with_resource_constraints(roots, fIt, F, false, &resourceTable);
-			}
-
-			DEBUG(*outputLog << "New latency: " << latency << "\n");
- 
-			unsigned area = initialArea - FunctionAreaEstimator::get_basic_block_area(*AT, BB);
-			DEBUG(*outputLog << "New area: " << area << "\n");
-
-			float deltaLatency = (float) (initialLatency - latency);
-			float deltaArea = (float) (initialArea - area);
-			float marginalPerformance;
-			if (deltaArea < 0.1) {
-				// this block contributes no area
-				// never remove a block that contributes no area?? No harm.
-				marginalPerformance = FLT_MAX;
-			} else {
-				marginalPerformance = deltaLatency / deltaArea;
-			}
-                       
-                        GradientPoint gPoint;
-                        gPoint.blockCount = count; 
-                        gPoint.grad = marginalPerformance;
-
-                        gradients[BB]->gradientPoints.push_back(gPoint);
-
-                        gradient[BB] = marginalPerformance;
-
-			assert(deltaArea >= 0);
-			DEBUG(*outputLog << "marginal performance/area of block " << marginalPerformance << "\n");
-			if (marginalPerformance < minMarginalPerformance) {
-				minMarginalPerformance = marginalPerformance;
-				removeBB = BB;
-				DEBUG(*outputLog << "New marginal performing block detected: " << BB->getName() << "\n");
-                                finalLatency = latency;
-                                finalArea = area;
-                                finalDeltaLatency = initialLatency - latency;
-                                finalDeltaArea = initialArea - area;
-			}
-
-			// restore the basic block count after removal
-			increment_basic_block_instance_count(BB);
-                        // If we went ACC -> CPU, we need to fixup transition times. 
-                        if(count == 1) {
-                          update_transition(BB);
-                        }
-                        resourceVector.push_back(0);
-		} // else continue
+                if(count == 1 || !UseThreads) {
+                  // this means we farmed out the parallel jobs
+                  // wait for them to get done before doing the serial 
+                  // jobs
+                  group.wait();
+                  std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
+                  handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);
+                } else {
+                  // farm out a parallel job.    
+                  std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
+                  // Obtain structure pointers outside of the lambda scope so that pass-by-value 
+                  // gets the right type. 
+                  auto gradientPointer = &gradient;
+                  auto execRootsPointer = &execRoots;
+                  group.run([=]{handle_basic_block_gradient(BB, gradientPointer, execRootsPointer, initialLatency, initialArea);});
+                }
 	}
+
+        // make sure that all jobs have quiesced.
+        group.wait();
 
         uint64_t finish = rdtsc();  
 
@@ -3086,6 +3072,15 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
         
         std::vector<double> coefs; 
         double alpha;
+
+        // set the 'removeBB' target to be the least useful block. 
+        double min_utility = FLT_MAX;
+        for(auto it = gradient.begin(); it != gradient.end(); it++) {
+          if(it->second < min_utility) {
+            removeBB = it->first;           
+            min_utility = it->second;      
+          }  
+        }
 
         if (RapidConvergence && (thresholds.size() > 0) && (initialArea > areaConstraint)) {
           double area_threshold; 
@@ -3148,7 +3143,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
             }
 
             std::cerr << "Eliminated " << area_removed_floor << " units of area rounded from " << area_removed << "needed: "<< area_threshold << std::endl;
-            alpha = alpha * 1.05;
+            alpha = alpha * 1.01;
           } while ( area_removed_floor < area_threshold);
 
 
@@ -3191,14 +3186,114 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
         }
 
-
-        
-       
-
-        std::cerr << "IGD Removing BB: " << removeBB->getName().str() << " ( " << removeBB << " ) area: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
+        std::cerr << "IGD Removing BB: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
 
 	return true; // not going to cpu only solution
 }
+
+
+// This does the main work of scheduling the gradient.  It is thread safe.
+void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea) {
+  // find the resourceTable associated with this block.
+  std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >* resourceTable;
+  resourceTable = threadPoolResourceTables.find(BB)->second;
+  std::unordered_map<BasicBlock*,int>* instanceCounts = threadPoolInstanceCounts.find(BB)->second; 
+
+  Function *F = BB->getParent();
+
+  auto search = resourceTable->find(BB);
+  std::vector<unsigned> &resourceVector = search->second.second;                
+  int count = resourceVector.size();
+
+  // Provisionally remove block
+  decrement_thread_pool_basic_block_instance_count(BB);
+
+  // display resource sizings.
+  //{
+  //  std::unique_lock<std::mutex> lk(threadPoolMutex);
+  //  std::cerr << "Done with block" << BB->getName().str() << std::endl;
+  //  for (auto itRT = resourceTable->begin(); itRT != resourceTable->end(); itRT++) {    
+  //    std::cerr << "RT Block: " << itRT->first->getName().str() << " count: " << itRT->second.second.size() << std::endl;      
+  //  }
+  //  for (auto itRT = instanceCounts->begin(); itRT != instanceCounts->end(); itRT++) {    
+  //    std::cerr << "IC Block: " << itRT->first->getName().str() << " count: " << itRT->second << std::endl;      
+  //  }
+  //}
+
+  // transition costs only happen if we go from accelerator impl. 
+  // to software impl. 
+  if(count == 1) {
+    update_transition(BB);
+  }
+
+  resourceVector.pop_back();
+    
+  DEBUG(*outputLog << "Performing removal of basic block " << BB->getName() << "\n");
+  // need to iterate through all calls made to function
+  uint64_t latency = 0;
+    
+
+  // reset all values to zero. 
+  // Really we should do our own maintainence here so as to reduce overhead. 
+  // One could even have a pool of these things reinitialized by a worker thread. 
+  for (auto itRT = resourceTable->begin(); itRT != resourceTable->end(); itRT++) {
+    for (auto itRV = itRT->second.second.begin(); itRV != itRT->second.second.end(); itRV++) {
+      *itRV = 0;
+    }
+  }
+  
+  for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+       fIt != executionGraph[F].end(); fIt++) {
+    std::vector<TraceGraph_vertex_descriptor> *roots = execRoots->find(&(*fIt))->second; 
+    latency += schedule_with_resource_constraints(roots, fIt, F, false, resourceTable);
+  }
+
+  unsigned area = initialArea - FunctionAreaEstimator::get_basic_block_area(*AT, BB);
+
+    
+  float deltaLatency = (float) (initialLatency - latency) + 1; // This one may keep things stable. 
+  float deltaArea = (float) (initialArea - area);
+  float marginalPerformance;
+  if (deltaArea < 0.1) {
+    // this block contributes no area
+    // never remove a block that contributes no area?? No harm.
+    marginalPerformance = FLT_MAX;
+  } else {
+    marginalPerformance = deltaLatency / deltaArea;
+  }
+    
+  GradientPoint gPoint;
+  gPoint.blockCount = count; 
+  gPoint.grad = marginalPerformance;
+    
+    
+  gradients.find(BB)->second->gradientPoints.push_back(gPoint);
+
+  // this is important.  It is where we communicate our result back.
+  // we use the below find syntax to ensure thread safety.
+  gradient->find(BB)->second = marginalPerformance;                  
+   
+  // restore the basic block count after removal
+  increment_thread_pool_basic_block_instance_count(BB);
+  
+  // If we went ACC -> CPU, we need to fixup transition times. 
+  if(count == 1) {
+    update_transition(BB);
+  }
+
+  resourceVector.push_back(0);
+  
+  //{
+  //   std::unique_lock<std::mutex> lk(threadPoolMutex);
+  //   std::cerr << "Done with block" << BB->getName().str() << " grad: " << marginalPerformance << "delta latency" << deltaLatency << "delta area" << deltaArea << std::endl;
+  //   std::cerr << "New latency: " << latency << "\n";
+  //   std::cerr << "New area: " << area << "\n";    
+  //   std::cerr << "Initial latency: " << initialLatency << "\n";
+  //   std::cerr << "initial area: " << initialArea << "\n";    
+  //}
+
+}
+
 /*
 #if 0
 // Function: find_optimal_configuration_for_all_calls
@@ -3337,7 +3432,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
     	        resourceTable.clear();
     	        initialize_resource_table(F, &resourceTable, false);
 
-		cpuOnlyLatency += schedule_with_resource_constraints(roots, fIt, F, true, &resourceTable);
+		cpuOnlyLatency += schedule_with_resource_constraints(&roots, fIt, F, true, &resourceTable);
 	}
 
 	return cpuOnlyLatency;
@@ -3349,7 +3444,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 // and the resource constraints embedded in the IR as metadata to determine
 // the latency of the particular function call instance represented by this
 // execution trace
-uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, 
+uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> *roots, 
                                                              TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable) {
         DEBUG(*outputLog << __func__ << "\n");
 
@@ -3369,7 +3464,7 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	// idleness
 
 	// reset the cpu free cycle global!
-	cpuCycle = -1;
+	int64_t cpuCycle = -1;
 
 	int64_t lastCycle = -1;
 
@@ -3377,8 +3472,8 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	// Use breadth first search to perform the scheduling
 	// with resource constraints
 	//===----------------------------------------------------===//
-	for (std::vector<TraceGraph_vertex_descriptor>::iterator rV = roots.begin();
-			rV != roots.end(); rV++) {
+	for (std::vector<TraceGraph_vertex_descriptor>::iterator rV = roots->begin();
+			rV != roots->end(); rV++) {
 		ConstrainedScheduleVisitor vis(graph_it, *LT/*latency of BBs*/, lastCycle, cpuCycle, resourceTable);
 		boost::breadth_first_search(graph, vertex(0, graph), boost::visitor(vis).root_vertex(*rV));
 		//boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
@@ -3405,6 +3500,33 @@ void AdvisorAnalysis::find_root_vertices(std::vector<TraceGraph_vertex_descripto
 // needed
 void AdvisorAnalysis::set_basic_block_instance_count(BasicBlock *BB, int value) {
   bbInstanceCounts[BB] = value;
+  // apply across the threadpool
+  set_all_thread_pool_basic_block_instance_counts(BB, value);
+}
+
+void AdvisorAnalysis::set_all_thread_pool_basic_block_instance_counts(BasicBlock *BB, int value) {
+  for (auto it = threadPoolInstanceCounts.begin(); it != threadPoolInstanceCounts.end(); it++) {
+    (*it).second->at(BB) = value;
+  }
+}
+
+// Resizes the thread pool resource tables after a gradient step
+void AdvisorAnalysis::adjust_all_thread_pool_resource_tables(BasicBlock *BB, int value) {
+  for (auto it = threadPoolResourceTables.begin(); it != threadPoolResourceTables.end(); it++) {
+    (*it).second->at(BB).second.resize(value);
+    // if we went cpu only, set the first member to true
+    if(value <= 0) {
+      (*it).second->at(BB).first = true;
+    }
+  }
+}
+
+void AdvisorAnalysis::set_thread_pool_basic_block_instance_count(BasicBlock *BB, int value) {
+  threadPoolInstanceCounts.find(BB)->second->find(BB)->second = value;
+}
+
+int AdvisorAnalysis::get_thread_pool_basic_block_instance_count(BasicBlock *BB) {
+  return threadPoolInstanceCounts.find(BB)->second->find(BB)->second;
 }
 
 
@@ -3412,13 +3534,6 @@ int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
   return bbInstanceCounts[BB];
 }
 
-void AdvisorAnalysis::flush_basic_block_instance_count(BasicBlock *BB) {
-  //  set_basic_block_instance_count_meta(BB, bbInstanceCounts[BB]);
-}
-
-void AdvisorAnalysis::load_basic_block_instance_count(BasicBlock *BB) {
-  //  bbInstanceCounts[BB] = get_basic_block_instance_count_meta(BB);
-}
 
 // Function: decrement_basic_block_instance_count
 // Return: false if decrement not successful
@@ -3430,14 +3545,17 @@ bool AdvisorAnalysis::decrement_basic_block_instance_count(BasicBlock *BB) {
 		return false;
 	}
 
-	/*
-	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
-	MDName += BB->getName().str();
-	LLVMContext &C = BB->getContext();
-	MDNode *N = MDNode::get(C, MDString::get(C, std::to_string(repFactor-1)));
-	BB->getTerminator()->setMetadata(MDName, N);
-	*/
 	set_basic_block_instance_count(BB, repFactor - 1);
+	return true;
+}
+
+bool AdvisorAnalysis::decrement_thread_pool_basic_block_instance_count(BasicBlock *BB) {
+	int repFactor = get_thread_pool_basic_block_instance_count(BB);
+	if (repFactor <= 0) { // 0 represents CPU execution, anything above 0 means HW accel
+		return false;
+	}
+
+	set_thread_pool_basic_block_instance_count(BB, repFactor - 1);
 	return true;
 }
 
@@ -3448,14 +3566,15 @@ bool AdvisorAnalysis::decrement_basic_block_instance_count(BasicBlock *BB) {
 bool AdvisorAnalysis::increment_basic_block_instance_count(BasicBlock *BB) {
 	int repFactor = get_basic_block_instance_count(BB);
 
-	/*
-	std::string MDName = "FPGA_ADVISOR_REPLICATION_FACTOR_";
-	MDName += BB->getName().str();
-	LLVMContext &C = BB->getContext();
-	MDNode *N = MDNode::get(C, MDString::get(C, std::to_string(repFactor+1)));
-	BB->getTerminator()->setMetadata(MDName, N);
-	*/
 	set_basic_block_instance_count(BB, repFactor + 1);
+
+	return true;
+}
+
+bool AdvisorAnalysis::increment_thread_pool_basic_block_instance_count(BasicBlock *BB) {
+	int repFactor = get_thread_pool_basic_block_instance_count(BB);
+
+	set_thread_pool_basic_block_instance_count(BB, repFactor + 1);
 
 	return true;
 }
@@ -3509,6 +3628,9 @@ bool AdvisorAnalysis::decrease_basic_block_instance_count_and_update_transition(
       updateFunctions[block->getParent()] = 0;
     }
 
+    // update both the thread pools and the main instance count. 
+    set_all_thread_pool_basic_block_instance_counts(block, newCount);
+    adjust_all_thread_pool_resource_tables(block, newCount);
     set_basic_block_instance_count(block, newCount);
   }
 

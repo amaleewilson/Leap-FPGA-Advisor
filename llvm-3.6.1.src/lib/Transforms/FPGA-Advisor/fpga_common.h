@@ -62,6 +62,11 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/CommandLine.h"
 
+// include tbb components 
+#include "tbb/task.h"
+#include "tbb/task_group.h"
+#include "tbb/task_scheduler_init.h"
+
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/depth_first_search.hpp>
 #include <boost/graph/breadth_first_search.hpp>
@@ -73,6 +78,7 @@
 #include <map>
 #include <list>
 #include <string>
+#include <mutex>
 
 #include <dlfcn.h>
 
@@ -678,7 +684,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 		int mutable lastCycle;
 		int64_t *lastCycle_ref;
 		int64_t *cpuCycle_ref;
-		std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable;
+                std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable;
 
                 ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int64_t &lastCycle, int64_t &cpuCycle, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *_resourceTable) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable) {}
 
@@ -696,6 +702,7 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 				//std::cerr << "MINIMUM END CYCLE FOR EDGE: " << (*graph_ref)[s].get_end() << "\n";
 				//std::cerr << "TRANSITION DELAY: " << transitionDelay << "\n";
 				//std::cerr << "MAX START: " << start << "\n";
+                                
 				start = std::max(start, (*graph_ref)[s].get_end() + transitionDelay);
 				//std::cerr << "NEW START: " << start << "\n";
 			}
@@ -781,6 +788,8 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 
 	public:
 		static char ID;
+                const int THREADS = 16;
+                const bool useThreading = true;
 		void getAnalysisUsage(AnalysisUsage &AU) const override {
 			AU.addPreserved<AliasAnalysis>();
 			AU.setPreservesAll();
@@ -792,22 +801,34 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 			AU.addRequired<FunctionScheduler>();
 			AU.addRequired<FunctionAreaEstimator>();
 		}
-                AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000), bbInstanceCounts() {}
+                AdvisorAnalysis();
 		bool runOnModule(Module &M);
 		void visitFunction(Function &F);
 		void visitBasicBlock(BasicBlock &BB);
 		void visitInstruction(Instruction &I);
                 int  get_basic_block_instance_count(BasicBlock *BB);
 		void set_basic_block_instance_count(BasicBlock *BB, int value);
-		void load_basic_block_instance_count(BasicBlock *BB);
-		void flush_basic_block_instance_count(BasicBlock *BB);
+                void adjust_all_thread_pool_resource_tables(BasicBlock *BB, int value);
+                void set_all_thread_pool_basic_block_instance_counts(BasicBlock *BB, int value); 
+                void set_thread_pool_basic_block_instance_count(BasicBlock *BB, int value);
+                int  get_thread_pool_basic_block_instance_count(BasicBlock *BB);
+                void handle_basic_block_gradient(BasicBlock * BB, std::map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea);
+
+                // state for each thread. We index these by basic block, such that we might have a thread per basic block. 
+                std::unordered_map<BasicBlock*, int> bbInstanceCounts;
+                std::unordered_map<BasicBlock *, std::unordered_map<BasicBlock*,int>* > threadPoolInstanceCounts;
+                std::unordered_map<BasicBlock *, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >* > threadPoolResourceTables;
+
                  
 	private:
+                // thread pool for gradient. 
+                tbb::task_scheduler_init init;
+                tbb::task_group group;
+                std::mutex threadPoolMutex;
+
    	        unsigned areaConstraint;                                
                 std::vector<double> thresholds;
-
-                std::unordered_map<BasicBlock*,int> bbInstanceCounts; 
-
+                
 		// functions
 		void find_recursive_functions(Module &M);
 		void does_function_recurse(Function *func, CallGraphNode *CGN, std::vector<Function *> &stack);
@@ -857,14 +878,16 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
                 bool incremental_gradient_descent(Function *F, std::unordered_map<BasicBlock*, int> &removeBBs, int64_t &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea);
 		void initialize_basic_block_instance_count(Function *F);
 		bool decrement_basic_block_instance_count(BasicBlock *BB);
+		bool decrement_thread_pool_basic_block_instance_count(BasicBlock *BB);
 		bool increment_basic_block_instance_count(BasicBlock *BB);
+		bool increment_thread_pool_basic_block_instance_count(BasicBlock *BB);
 		void update_transition(BasicBlock *BB);
 		bool decrement_basic_block_instance_count_and_update_transition(BasicBlock *BB);
                 bool decrease_basic_block_instance_count_and_update_transition(std::unordered_map<BasicBlock *, int > &removeBBs);
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-                uint64_t schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
+                uint64_t schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> *roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
 		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly); 
 		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
