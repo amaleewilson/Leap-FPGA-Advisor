@@ -153,11 +153,18 @@ static cl::opt<unsigned int> TraceThreshold("trace-threshold", cl::desc("Maximum
 );
 static cl::opt<unsigned int> AreaConstraint("area-constraint", cl::desc("Set the area constraint"),
 		cl::Hidden, cl::init(0));
+
 static cl::opt<unsigned int> RapidConvergence("rapid-convergence", cl::desc("specify number of steps to use in fast convergence method"),
 		cl::Hidden, cl::init(0));
 
 static cl::opt<unsigned int> UseThreads("use-threads", cl::desc("specify number of threads to use in gradient descent"),
 		cl::Hidden, cl::init(1));
+
+static cl::opt<unsigned int> SerialGradientCutoff("serial-cutoff", cl::desc("specifies lower bound for computation of serial gradient"),
+		cl::Hidden, cl::init(0));
+
+static cl::opt<unsigned int> ParllelGradientCutoff("parallel-cutoff", cl::desc("specifies lower bound for computation of parallel gradient"),
+		cl::Hidden, cl::init(0));
 
 static cl::opt<unsigned> UserTransitionDelay("transition-delay", cl::desc("Set the fpga to cpu transition delay baseline"),
 		cl::Hidden, cl::init(0));
@@ -524,7 +531,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
         // Construct a series of steps to permit gradual elimination of area. 
         double baseArea = 1.00;
         for ( int i = 0; i < pruning_steps; i++) {
-          thresholds.push_back(areaConstraint + baseArea);  // Encode the difference as the amount of area we must reduce. 
+          thresholds.push_back(std::max(areaConstraint + baseArea, (double) areaConstraint));  // Encode the difference as the amount of area we must reduce. 
           DEBUG(std::cerr << "Pushing threshold: " << (areaConstraint + baseArea) << std::endl);
           baseArea = baseArea * area_root;
         }
@@ -1192,7 +1199,7 @@ bool AdvisorAnalysis::get_program_trace(std::string fileIn) {
 			// 20 points, print progress every 5% processed
 			unsigned int fivePercent = totalLineNum / 20;
 			if ((lineNum % fivePercent) == 0) {
-				std::cerr << BOLDGREEN << " [ " << 5 * times << "% ] " << RESET << lineNum << "/" << totalLineNum << "\n";
+				std::cerr << " [ " << 5 * times << "% ] " << RESET << lineNum << "/" << totalLineNum << "\n";
 				times++;
 			}
 			std::cerr << RESET;
@@ -2827,27 +2834,28 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	std::cerr << F->getName().str() << "\n";
 	std::cerr << "Progress bar |";
 
-
         // Build up various basic-block level data structures
-
+        std::unordered_map<BasicBlock *, double> gradient;
+     
         for (auto BB = F->begin(); BB != F->end(); BB++) {
           gradients[BB] = new Gradient();
+          gradient[BB] = 0; 
           std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable = new std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >();
           resourceTable->clear();
           initialize_resource_table(F, resourceTable, false);
           threadPoolResourceTables[BB] = resourceTable;
         } 
 
+
 	while (!done) {
 		ConvergenceCounter++; // for stats
-		std::cerr << BOLDMAGENTA << "=" << RESET; // progress bar
                 
 		area = get_area_requirement(F);
 		if (area > areaConstraint) {
                         std::cerr << "Area constraint violated. Reduce area.\n\n\n\n\n";
                         std::unordered_map<BasicBlock *, int> removeBB;
 			int64_t deltaDelay = INT_MAX;
-			bool cpuOnly = !incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
+			bool cpuOnly = !incremental_gradient_descent(F, gradient, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 			if (cpuOnly) {
 				// decrement all basic blocks until cpu-only
 				*outputLog << "[step] Remove all basic blocks\n";
@@ -2868,7 +2876,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 			*outputLog << "Area constraint satisfied, remove non performing blocks.\n";
                         std::unordered_map<BasicBlock *, int> removeBB;
 			int64_t deltaDelay = INT_MIN;
-			incremental_gradient_descent(F, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
+			incremental_gradient_descent(F, gradient, removeBB, deltaDelay, cpuOnlyLatency, fpgaOnlyLatency, fpgaOnlyArea);
 
 			// only remove block if it doesn't negatively impact delay
 			if (deltaDelay >= 0 && (removeBB.begin() != removeBB.end())) {
@@ -2926,7 +2934,7 @@ uint64_t rdtsc(){
 // Function will iterate through each basic block which has a hardware instance of more than 0
 // to determine the change in delay with the removal of that basic block and finds the basic block
 // whose contribution of delay/area is the least (closest to zero or negative)
-bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_map<BasicBlock *, int> &removeBBs, int64_t &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
+bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_map<BasicBlock *, double> &gradient, std::unordered_map<BasicBlock *, int> &removeBBs, int64_t &deltaDelay, unsigned cpuOnlyLatency, unsigned fpgaOnlyLatency, unsigned fpgaOnlyArea) {
 	unsigned initialArea = get_area_requirement(F);
 	*outputLog << "Initial area: " << initialArea << "\n";
 	unsigned initialLatency = 0;
@@ -2943,7 +2951,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
         std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > execRoots;
 
-        std::map<BasicBlock *, double> gradient;
+
 
         // this code must go away. 
 	// need to loop through all calls to function to get total latency
@@ -3008,14 +3016,13 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
         // We need to maintain a list of those blocks which change latency.
         std::deque<BasicBlock*> blocks;
 
-        //{
-        //  std::unique_lock<std::mutex> lk(threadPoolMutex);
-        //  std::cerr << "Main Table " << std::endl;
-        //  for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {    
-        //    std::cerr << "Block: " << itRT->first->getName().str() << " count: " << itRT->second.second.size() << std::endl;
-        //  }
-        // }
-
+        /*{        
+          std::cerr << "Main Table " << std::endl;
+          for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {    
+            std::cerr << "Block: " << itRT->first->getName().str() << " count: " << itRT->second.second.size() << std::endl;
+          }
+        }*/
+ 
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		//if (decrement_basic_block_instance_count(BB)) {
                 auto search = resourceTable.find(BB);
@@ -3024,61 +3031,104 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
                 if(count == 1) {
                   blocks.push_back(BB);                 
-                } else if (count > 1) {
+                } else if (count > 1) {                  
                   blocks.push_front(BB);                 
-                }
-
-                // set up the gradient hash, since we cannot insert
-                // while threading.
-                if(count > 0) {
-                  gradient[BB] = 0;
-                }
-                          
+                }                          
         }
 
+        uint64_t par_start = rdtsc();  
+        int jobCount = 0;
 	// try removing each basic block
 	for (auto itBB = blocks.begin(); itBB != blocks.end(); itBB++) {
-		//if (decrement_basic_block_instance_count(BB)) {
-                BasicBlock *BB = *itBB;
-                auto search = resourceTable.find(BB);
-                std::vector<unsigned> &resourceVector = search->second.second;                
-                int count = resourceVector.size();
-
-                if(count == 1 || !UseThreads) {
-                  // this means we farmed out the parallel jobs
-                  // wait for them to get done before doing the serial 
-                  // jobs
-                  group.wait();
-                  std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
-                  handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);
-                } else {
-                  // farm out a parallel job.    
-                  std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
-                  // Obtain structure pointers outside of the lambda scope so that pass-by-value 
-                  // gets the right type. 
-                  auto gradientPointer = &gradient;
-                  auto execRootsPointer = &execRoots;
-                  group.run([=]{handle_basic_block_gradient(BB, gradientPointer, execRootsPointer, initialLatency, initialArea);});
-                }
+          //if (decrement_basic_block_instance_count(BB)) {
+          BasicBlock *BB = *itBB;
+          auto search = resourceTable.find(BB);
+          std::vector<unsigned> &resourceVector = search->second.second;                
+          int count = resourceVector.size();
+          //std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
+          if((count > 1) && (UseThreads > 1)) {
+            // farm out a parallel job.    
+            //std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
+            // Obtain structure pointers outside of the lambda scope so that pass-by-value 
+            // gets the right type. 
+            auto gradientPointer = &gradient;
+            auto execRootsPointer = &execRoots;
+            group.run([=]{handle_basic_block_gradient(BB, gradientPointer, execRootsPointer, initialLatency, initialArea);});
+            jobCount++;
+          }
 	}
 
         // make sure that all jobs have quiesced.
         group.wait();
+        uint64_t par_finish = rdtsc(); 
+        std::cerr << "Parallel region cycle count: " << (par_finish - par_start) << " Use Threads " << UseThreads <<std::endl;
+        if(jobCount > 0) {
+          std::cerr << " By threads " << (par_finish - par_start)/jobCount  << std::endl; 
+        } 
+        // These gradients are the single block ones. 
+        // They aren't so useful so we try to avoid computing them based on the result 
+        // of the current gradient.
+        double min_utility = FLT_MAX;
+
+        for(auto it = gradient.begin(); it != gradient.end(); it++) {
+          //std::cerr << "gradient " << it->first->getName().str() <<  " count " << get_basic_block_instance_count(it->first) << " utility " << it->second << std::endl; 
+          if((it->second < min_utility) && (get_basic_block_instance_count(it->first) > 0) && (it->second != 0)) {
+            removeBB = it->first;           
+            min_utility = it->second;      
+            //std::cerr << "Setting min utility " << removeBB->getName().str() <<  " count " << get_basic_block_instance_count(it->first) << " utility " << min_utility << std::endl; 
+          }  
+        }
+  
+
+        int seqCount = 0;
+        uint64_t serial_start = rdtsc();  
+	for (auto itBB = blocks.begin(); itBB != blocks.end(); itBB++) {
+          //if (decrement_basic_block_instance_count(BB)) {
+          BasicBlock *BB = *itBB;
+          auto search = resourceTable.find(BB);
+          std::vector<unsigned> &resourceVector = search->second.second;                
+          int count = resourceVector.size();
+          // Check gradients to see if we need to recalculate.
+          // In this case, we use the last gradient we
+          // calculated as a guess. If it is not projected to be
+          // useful, we don't recalculate.
+                    
+          if((count == 1) || (UseThreads == 1)) {
+            if( (gradient[BB] == 0) || (gradient[BB] < SerialGradientCutoff * min_utility) ) {               
+              //std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
+              seqCount++;
+              handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+            } else if ( SerialGradientCutoff == 0) {
+              seqCount++;
+              handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+            }  else {
+              std::cerr << "Did not recompute gradient " << BB->getName().str() << std::endl;               
+            } 
+          }
+	}
+       
+        uint64_t serial_finish = rdtsc();  
+        std::cerr << "Serial region cycle count: " << (serial_finish - serial_start);  
+        if(seqCount > 0) {
+          std::cerr << " By threads " << (serial_finish - serial_start)/seqCount  << std::endl; 
+        } 
 
         uint64_t finish = rdtsc();  
 
         // Decide how far to step in the gradient direction depends on where we are.  
           
         
-        std::vector<double> coefs; 
+        std::unordered_map<BasicBlock*, double> coefs; 
         double alpha;
 
         // set the 'removeBB' target to be the least useful block. 
-        double min_utility = FLT_MAX;
+        min_utility = FLT_MAX;
         for(auto it = gradient.begin(); it != gradient.end(); it++) {
-          if(it->second < min_utility) {
+          //std::cerr << "gradient " << it->first->getName().str() <<  " count " << get_basic_block_instance_count(it->first) << " utility " << it->second << std::endl; 
+          if((it->second < min_utility) && (get_basic_block_instance_count(it->first) > 0)) {
             removeBB = it->first;           
-            min_utility = it->second;      
+            min_utility = it->second;     
+            //std::cerr << "Setting min utility " << removeBB->getName().str() <<  " count " << get_basic_block_instance_count(it->first) << " utility " << min_utility << std::endl; 
           }  
         }
 
@@ -3100,16 +3150,40 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           // by the required amount. We view the gradient coeffiencients 
           // as a determining the ratio of blocks to remove. 
           double sum = 0.0;
+          double max_coef = 0.0;
+          int max_area = 0;
 
           for(auto it = gradient.begin(); it != gradient.end(); it++) {
-            coefs.push_back(1/it->second);
-            sum += FunctionAreaEstimator::get_basic_block_area(*AT, it->first)/it->second;
+            if (get_basic_block_instance_count(it->first) > 0) {
+              double coef = 1/(it->second + FLT_MIN);
+              coefs[it->first] = coef;
+              if(max_coef < coef) {
+                max_coef = coef;
+                max_area = FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+              }
+            } else {
+              // can't remove blocks that aren't there.
+              removeBBs[it->first] = 0;
+            }
           }
                     
-          alpha = area_threshold / sum;           
+          // scale alpha such that we remove least enough blocks of
+          // the largest type to get the area we care about.  We must
+          // take care to ensure the we will remove at least one
+          // block.  find a power of two that encompasses maximum
+          // number of blocks we will remove.
+          int max_count = (std::max(max_area, (int)area_threshold)/max_area) + 1;
+          int max_power = 1;
+          while (max_power < max_count) {
+            max_power <<= 1;
+          }
+
+          alpha = std::max((double)max_area, area_threshold)/(max_coef*max_area);
      
           std::cerr << "Alpha: " << alpha << "\n";         
           std::cerr << "initial area: " << initialArea << "\n";         
+          std::cerr << "max coef: " << max_coef << "\n";         
+          std::cerr << "max area: " << max_area << "\n";         
           std::cerr << "target  area: " << target_threshold << "\n";         
           std::cerr << "Area_threshold: " << area_threshold << "\n";         
           std::cerr << "Sum: " << sum << "\n";         
@@ -3124,47 +3198,72 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           double area_removed_floor = 0;
           double area_removed = 0;
 
+          // We get some estimate of alpha.  Since we are doing
+          // rounding and also cannot reduce block counts beneath 0,
+          // we need to massage alpha to cut the right number of
+          // blocks.  Essentially, we will do a binary search to find
+          // the value of alpha that does the right thing. 
+
+          // Now, we set up a search to find the 'right' value of alpha. 
+          double alpha_step = 1.0;
+          double alpha_scaler = 2 * alpha_step;
+          double alpha_step_cutoff = 1.0/(max_power * 2);
+          double last_passing_step = 0;
+
+          double alpha_prime = alpha * alpha_scaler;
+
           // this doesn't need to be an iterative loop, probably. 
           do {
-        
-            auto coefIt = coefs.begin();
+            foundNonZero = false;
+            area_removed_floor = 0;
+            area_removed = 0;
             for(auto it = gradient.begin(); it != gradient.end(); it++) {                                    
+              // handle the case of already eliminated blocks
+              int block_count = get_basic_block_instance_count(it->first);
 
-              removeBBs[it->first] = floor(*coefIt * alpha);
+              removeBBs[it->first] = std::max(0, std::min(block_count, int(floor(coefs[it->first] * alpha_prime))));
               
-              if (floor(*coefIt * alpha) > .5) {
+              if (floor(coefs[it->first] * alpha_prime) > .5) {
                 foundNonZero = true;
               }
-          
-              area_removed_floor += floor(*coefIt * alpha) * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
-              area_removed += *coefIt * alpha * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+              // need to check for removal of more blocks than actually exist. 
+              area_removed_floor += std::max(0, std::min(block_count, (int)floor(coefs[it->first] * alpha_prime))) * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
+              area_removed += coefs[it->first] * alpha_prime * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
 
-              coefIt++;
             }
 
-            std::cerr << "Eliminated " << area_removed_floor << " units of area rounded from " << area_removed << "needed: "<< area_threshold << std::endl;
-            alpha = alpha * 1.01;
-          } while ( area_removed_floor < area_threshold);
+            std::cerr << "Alpha scaler: " << alpha_scaler << "Eliminated " << area_removed_floor << " units of area rounded from " << area_removed << "needed: "<< area_threshold << std::endl;
+ 
+            if(area_removed_floor > area_threshold) {
+              last_passing_step = alpha_prime;
+              alpha_scaler = alpha_scaler - alpha_step;
+            } else {
+              alpha_scaler = alpha_scaler + alpha_step;
+            }   
+
+            alpha_step = alpha_step/2;            
+            alpha_prime = alpha * alpha_scaler;
+           
+          } while (alpha_step > alpha_step_cutoff);
 
 
-          alpha = alpha / 1.05;
-
+          // use last passing step to set the removal vector.            
+          
           area_removed_floor = 0;
           area_removed = 0;
-            
-          auto coefIt = coefs.begin();
+          foundNonZero = false;
           for(auto it = gradient.begin(); it != gradient.end(); it++) {                                    
-            removeBBs[it->first] = floor(*coefIt * alpha);
+            int block_count = get_basic_block_instance_count(it->first);
+            // handle the case of already eliminated blocks
+
+            removeBBs[it->first] = std::max(0,std::min(block_count, (int)floor(coefs[it->first] * last_passing_step)));
               
-            if (floor(*coefIt * alpha) > .5) {
+            if (floor(coefs[it->first] * last_passing_step) > 1.0) {
               foundNonZero = true;
             }
 
-            std::cerr << it->first->getName().str() << ", " << it->second << ", " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << ", " << get_basic_block_instance_count(it->first) << " removing " << floor(*coefIt * alpha) << " -> " << (get_basic_block_instance_count(it->first) - floor(*coefIt * alpha))  << "remain\n";
-            coefIt++;
-            area_removed_floor += floor(*coefIt * alpha) * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
-            area_removed += *coefIt * alpha * FunctionAreaEstimator::get_basic_block_area(*AT, it->first);
-
+            std::cerr << it->first->getName().str() << ", " << it->second << ", " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << ", " << get_basic_block_instance_count(it->first) << " removing " << removeBBs[it->first] << " -> " << (get_basic_block_instance_count(it->first) - removeBBs[it->first])  << "remain\n";
+           
           }
 
 
@@ -3186,14 +3285,14 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
         }
 
-        std::cerr << "IGD Removing BB: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
+        std::cerr << "Removing BB: " << finalArea << " ( " << finalDeltaArea << " ) " << " latency: " << finalLatency << " ( " << finalDeltaLatency << " ) in " << finish - start << " cycles" << std::endl;
 
 	return true; // not going to cpu only solution
 }
 
 
 // This does the main work of scheduling the gradient.  It is thread safe.
-void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea) {
+void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordered_map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea) {
   // find the resourceTable associated with this block.
   std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >* resourceTable;
   resourceTable = threadPoolResourceTables.find(BB)->second;
