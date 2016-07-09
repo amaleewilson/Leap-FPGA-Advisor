@@ -84,6 +84,7 @@
 #include "tbb/task.h"
 #include "tbb/task_group.h"
 #include "tbb/task_scheduler_init.h"
+#include "tbb/tick_count.h"
 
 //#define DEBUG_TYPE "fpga-advisor-analysis"
 #define DEBUG_TYPE "fpga-advisor"
@@ -163,6 +164,9 @@ static cl::opt<unsigned int> UseThreads("use-threads", cl::desc("specify number 
 static cl::opt<unsigned int> SerialGradientCutoff("serial-cutoff", cl::desc("specifies lower bound for computation of serial gradient"),
 		cl::Hidden, cl::init(0));
 
+static cl::opt<unsigned int> ParallelizeOneZero("parallelize-one-zero", cl::desc("parallelizes one-zero transistions without changing latencies"),
+		cl::Hidden, cl::init(0));
+
 static cl::opt<unsigned int> ParllelGradientCutoff("parallel-cutoff", cl::desc("specifies lower bound for computation of parallel gradient"),
 		cl::Hidden, cl::init(0));
 
@@ -202,8 +206,8 @@ AdvisorAnalysis::AdvisorAnalysis() : ModulePass(ID), areaConstraint(1000), bbIns
 bool AdvisorAnalysis::runOnModule(Module &M) {
 	std::cerr << "Starting FPGA Advisor Analysis Phase...\n";
 	// take some run time stats
-	clock_t start, end;
-	start = clock();
+        tbb::tick_count start, end;
+	start = tbb::tick_count::now();
 	//=------------------------------------------------------=//
 	// [1] Initialization
 	//=------------------------------------------------------=//
@@ -268,9 +272,8 @@ bool AdvisorAnalysis::runOnModule(Module &M) {
 	// pre-instrumentation statistics => work with uninstrumented code
 	//print_statistics();
 
-	end = clock();
-	float timeElapsed(((float) end - (float) start) / CLOCKS_PER_SEC);
-	std::cerr << "TOTAL ANALYSIS RUNTIME: " << timeElapsed << " seconds\n";
+	end = tbb::tick_count::now();  
+	std::cerr << "TOTAL ANALYSIS RUNTIME: " << (end-start).seconds() << " seconds\n";
 
 	return true;
 }
@@ -3046,7 +3049,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           std::vector<unsigned> &resourceVector = search->second.second;                
           int count = resourceVector.size();
           //std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
-          if((count > 1) && (UseThreads > 1)) {
+          if(((count > 1) || ParallelizeOneZero) && (UseThreads > 1)) {
             // farm out a parallel job.    
             //std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
             // Obtain structure pointers outside of the lambda scope so that pass-by-value 
@@ -3082,31 +3085,32 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
         int seqCount = 0;
         uint64_t serial_start = rdtsc();  
-	for (auto itBB = blocks.begin(); itBB != blocks.end(); itBB++) {
-          //if (decrement_basic_block_instance_count(BB)) {
-          BasicBlock *BB = *itBB;
-          auto search = resourceTable.find(BB);
-          std::vector<unsigned> &resourceVector = search->second.second;                
-          int count = resourceVector.size();
-          // Check gradients to see if we need to recalculate.
-          // In this case, we use the last gradient we
-          // calculated as a guess. If it is not projected to be
-          // useful, we don't recalculate.
+        if (!ParallelizeOneZero) {
+          for (auto itBB = blocks.begin(); itBB != blocks.end(); itBB++) {
+            //if (decrement_basic_block_instance_count(BB)) {
+            BasicBlock *BB = *itBB;
+            auto search = resourceTable.find(BB);
+            std::vector<unsigned> &resourceVector = search->second.second;                
+            int count = resourceVector.size();
+            // Check gradients to see if we need to recalculate.
+            // In this case, we use the last gradient we
+            // calculated as a guess. If it is not projected to be
+            // useful, we don't recalculate.
                     
-          if((count == 1) || (UseThreads == 1)) {
-            if( (gradient[BB] == 0) || (gradient[BB] < SerialGradientCutoff * min_utility) ) {               
-              //std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
-              seqCount++;
-              handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
-            } else if ( SerialGradientCutoff == 0) {
-              seqCount++;
-              handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
-            }  else {
-              std::cerr << "Did not recompute gradient " << BB->getName().str() << std::endl;               
-            } 
+            if((count == 1) || (UseThreads == 1)) {
+              if( (gradient[BB] == 0) || (gradient[BB] < SerialGradientCutoff * min_utility) ) {               
+                //std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
+                seqCount++;
+                handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+              } else if ( SerialGradientCutoff == 0) {
+                seqCount++;
+                handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+              }  else {
+                std::cerr << "Did not recompute gradient " << BB->getName().str() << std::endl;               
+              } 
+            }
           }
-	}
-       
+        }
         uint64_t serial_finish = rdtsc();  
         std::cerr << "Serial region cycle count: " << (serial_finish - serial_start);  
         if(seqCount > 0) {
@@ -3321,7 +3325,7 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
 
   // transition costs only happen if we go from accelerator impl. 
   // to software impl. 
-  if(count == 1) {
+  if((count == 1) && !ParallelizeOneZero) {
     update_transition(BB);
   }
 
@@ -3376,7 +3380,7 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
   increment_thread_pool_basic_block_instance_count(BB);
   
   // If we went ACC -> CPU, we need to fixup transition times. 
-  if(count == 1) {
+  if((count == 1) && !ParallelizeOneZero) {
     update_transition(BB);
   }
 
