@@ -2226,6 +2226,12 @@ bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGrap
 // Function: initialize_basic_block_instance_count
 // Initializes the replication factor metadata for each basic block in function to zero
 void AdvisorAnalysis::initialize_basic_block_instance_count(Function *F) {
+  // delete anything left over from a previous run. 
+
+  for (auto it = threadPoolInstanceCounts.begin(); it != threadPoolInstanceCounts.end(); it++) {
+    free((*it).second);
+  }
+  threadPoolInstanceCounts.clear();
 
   // first we must set up the threadpool structures. 
   for (auto BB = F->begin(); BB != F->end(); BB++) {
@@ -2840,6 +2846,12 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
         // Build up various basic-block level data structures
         std::unordered_map<BasicBlock *, double> gradient;
      
+        // clear out the prior resource table.
+        for (auto tableIT = threadPoolResourceTables.begin(); tableIT != threadPoolResourceTables.end(); tableIT++) {
+          delete tableIT->second;
+        }
+        threadPoolResourceTables.clear();
+
         for (auto BB = F->begin(); BB != F->end(); BB++) {
           gradients[BB] = new Gradient();
           gradient[BB] = 0; 
