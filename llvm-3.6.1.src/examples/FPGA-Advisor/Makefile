@@ -61,6 +61,8 @@ OPT_FLAGS= -O2
 TRACE_LOG?= trace.log
 AA_FLAGS= -basicaa -tbaa
 
+THREADS=20
+
 #ifdef($(PRINT_DEPGRAPH))
 #	OPT_FLAGS+= -print-dg 
 #endif
@@ -107,7 +109,7 @@ dep:
 # fpga advisor analysis
 ana: $(NAME).opt.bc $(TRACE_LOG)
 	@echo "Running analysis stage..."
-	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -use-threads=20 -parallelize-one-zero=1 -serial-cutoff=10 -rapid-convergence=5 -area-constraint=500 -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
+	$(OPT) $(OPT_LD_FLAG) $(ANALYSIS_FLAGS) $(DEBUG) -fpga-advisor-analysis -use-threads=$(THREADS) -parallelize-one-zero=1 -serial-cutoff=10 -rapid-convergence=5 -area-constraint=500 -trace-file=$(TRACE_LOG) < $(NAME).opt.bc > $(NAME).output.bc
 	$(DIS) $(NAME).output.bc
 
 # generate static dependence graph
