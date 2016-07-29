@@ -513,7 +513,7 @@ bool AdvisorAnalysis::run_on_function(Function *F) {
 	// we want to find the optimal tiling for the basicblocks
 	// the starting point of the algorithm is the MOST parallel
 	// configuration, which can be found by scheduling independent
-	// sic blocks in the earliest cycle that it is allowed to be executed
+	// blocks in the earliest cycle that it is allowed to be executed
 	find_maximal_configuration_for_all_calls(F, fpgaOnlyLatency, fpgaOnlyArea);
 
 	*outputLog << "Maximal basic block configuration for function: " << F->getName() << "\n";
@@ -1825,74 +1825,106 @@ Function *AdvisorAnalysis::find_function_by_name(std::string funcName) {
 // Does not look across function boundaries
 // The parallelization factor will be stored in metadata for each basicblock
 bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsigned &fpgaOnlyLatency, unsigned &fpgaOnlyArea) {
-	*outputLog << __func__ << " for function " << F->getName() << "\n";;
-	//assert(executionTrace.find(F) != executionTrace.end());
-	assert(executionGraph.find(F) != executionGraph.end());
-	assert(executionOrderListMap.find(F) != executionOrderListMap.end());
-	bool scheduled = false;
+  *outputLog << __func__ << " for function " << F->getName() << "\n";;
+  //assert(executionTrace.find(F) != executionTrace.end());
+  assert(executionGraph.find(F) != executionGraph.end());
+  assert(executionOrderListMap.find(F) != executionOrderListMap.end());
+  bool scheduled = false;
 
-	int unconstrainedLastCycle = -1;
+  int unconstrainedLastCycle = -1;
 
-	initialize_basic_block_instance_count(F);
+  initialize_basic_block_instance_count(F);
 
-	// The ending condition should be determined by the user input of acceptable
-	// area and latency constraints
-	//while (1) {
-		// iterate over all calls
-		*outputLog << "There are " << executionGraph[F].size() << " calls to " << F->getName() << "\n";
-		TraceGraphList_iterator fIt;
-		ExecutionOrderList_iterator eoIt;
-		for (fIt = executionGraph[F].begin(),
-				eoIt = executionOrderListMap[F].begin(); 
-				fIt != executionGraph[F].end(),
-				eoIt != executionOrderListMap[F].end(); fIt++, eoIt++) {
-			std::vector<TraceGraph_vertex_descriptor> rootVertices;
-			rootVertices.clear();
-			scheduled |= find_maximal_configuration_for_call(F, fIt, eoIt, rootVertices);
-			//scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
-			// after creating trace graphs representing maximal parallelism
-			// compute maximal tiling
-			//find_maximal_tiling_for_call(F, fIt);
+  // The ending condition should be determined by the user input of acceptable
+  // area and latency constraints
+  //while (1) {
+  // iterate over all calls
+  *outputLog << "There are " << executionGraph[F].size() << " calls to " << F->getName() << "\n";
+  TraceGraphList_iterator fIt;
+  ExecutionOrderList_iterator eoIt;
+  // Define a resource table here. this will be expanded as we schedule the graphs
+  std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+  resourceTable.clear();
+  initialize_resource_table(F, &resourceTable, false);
 
-			// find root vertices
-			find_root_vertices(rootVertices, fIt);
+  int lastCycle = -1;
 
-			TraceGraph graph = *fIt;
-			*outputLog << "root vertices are: ";
-			for (auto rV = rootVertices.begin(); rV != rootVertices.end(); rV++) {
-				*outputLog << "root: [" << *rV << "]->" << graph[*rV].name << "\n";
-			}
+  for (fIt = executionGraph[F].begin(),
+         eoIt = executionOrderListMap[F].begin(); 
+       fIt != executionGraph[F].end(),
+         eoIt != executionOrderListMap[F].end(); fIt++, eoIt++) {
+
+    std::vector<TraceGraph_vertex_descriptor> rootVertices;
+    rootVertices.clear();
+
+    // This function really seems to annotate the graph with dependencies    
+    scheduled |= find_maximal_configuration_for_call(F, fIt, eoIt, rootVertices);
+    //scheduled |= find_maximal_configuration_for_call(F, fIt, rootVertices);
+    // after creating trace graphs representing maximal parallelism
+    // compute maximal tiling
+    //find_maximal_tiling_for_call(F, fIt);
+    
+    // find root vertices
+    TraceGraph graph = *fIt;
+    *outputLog << "root vertices are: ";
 	
-			int lastCycle = -1;
-	
-			// annotate each node with the start and end cycles
-			scheduled |= annotate_schedule_for_call(F, fIt, rootVertices, lastCycle);
-	
-			DEBUG(*outputLog << "Last Cycle: " << lastCycle << "\n");
+                        
+    // Schedule graph.  
 
-			// after creating trace graphs, find maximal resources needed
-			// to satisfy longest antichain
-			scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
+    // reset resource availability table
+    for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {
+      for (auto itRV = itRT->second.second.begin(); itRV != itRT->second.second.end(); itRV++) {
+        *itRV = 0;
+      }
+    }
+
+    lastCycle += schedule_without_resource_constraints(fIt, F, &resourceTable);
+
+    DEBUG(*outputLog << "Last Cycle: " << lastCycle << "\n");
+
+    // after creating trace graphs, find maximal resources needed
+    // to satisfy longest antichain
+
+
+    //scheduled |= find_maximal_resource_requirement(F, fIt, rootVertices, lastCycle);
 	
-			// use gradient descent method
-			//modify_resource_requirement(F, fIt);
+    // use gradient descent method
+    //modify_resource_requirement(F, fIt);
+    
+  }
 
-			unconstrainedLastCycle = lastCycle;
+  // we have now found the best solution for the graph. We will update
+  // the best possible configuration for the function.
+  for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {
+    int blockCount = itRT->second.second.size();
+    BasicBlock *BB = itRT->first;
 
-		}
+    std::cerr << " For Block " << BB->getName().str() << " count is " << blockCount << std::endl;
+
+    set_all_thread_pool_basic_block_instance_counts(BB, blockCount);
+    set_basic_block_instance_count(BB, blockCount);
+
+  }
+
+  unconstrainedLastCycle = lastCycle;
+    
+
+
 	//}
-
+  
 
 	// keep this value for determining when to stop pursuing fpga accelerator implementation
-	fpgaOnlyLatency = unconstrainedLastCycle;
-	fpgaOnlyArea = get_area_requirement(F);
+  fpgaOnlyLatency = unconstrainedLastCycle;
+  fpgaOnlyArea = get_area_requirement(F);
 
-	*outputFile << "Unconstrained schedule: " << unconstrainedLastCycle << "\n";
-	*outputFile << "Area requirement: " << fpgaOnlyArea << "\n";
+  *outputFile << "Unconstrained schedule: " << unconstrainedLastCycle << "\n";
+  *outputFile << "Area requirement: " << fpgaOnlyArea << "\n";
 
-	return scheduled;
+  return scheduled;
 }
 
+
+// This 
 bool AdvisorAnalysis::find_maximal_configuration_for_call(Function *F, TraceGraphList_iterator graph,
 		ExecutionOrderList_iterator execOrder, std::vector<TraceGraph_vertex_descriptor> &rootVertices) {
         DEBUG(*outputLog << __func__ << " for function " << F->getName() << "\n");
@@ -2641,8 +2673,7 @@ void AdvisorAnalysis::find_new_parents(std::vector<TraceGraph_vertex_descriptor>
 
 // Function: annotate_schedule_for_call
 // Return: true if successful, false otherwise
-bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, 
-					std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle) {
+bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, int &lastCycle) {
 	// get the graph
 	TraceGraphList_iterator graph = graph_it;
 	//TraceGraph graph = *graph_it;
@@ -2667,6 +2698,8 @@ bool AdvisorAnalysis::annotate_schedule_for_call(Function *F, TraceGraphList_ite
 	ScheduleVisitor vis(graph, this, *LT, lastCycle, SINGLE_THREAD_TID);
 
 	boost::depth_first_search(*graph, boost::visitor(vis));
+
+        //lastCycle += schedule_without_resource_constraints(graph, F, false);
 
 
 	// for printing labels in graph output
@@ -2948,6 +2981,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 
 		}
 
+                std::cerr << "CPU-Only Latency: " << cpuOnlyLatency << " FPGA Latency: " << fpgaOnlyLatency << std::endl;
                 std::cerr << "Previous Latency: " << previousLatency << " Current Latency: " << initialLatency << " delta " << (initialLatency - previousLatency) << std::endl;
                 previousLatency = initialLatency;
 	}
@@ -2957,15 +2991,11 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	unsigned finalLatency = 0;
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
-		std::vector<TraceGraph_vertex_descriptor> roots;
-		roots.clear();
-		find_root_vertices(roots, fIt);
-
                 std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
     	        resourceTable.clear();
     	        initialize_resource_table(F, &resourceTable, false);
 
-		finalLatency += schedule_with_resource_constraints(&roots, fIt, F, false, &resourceTable, SINGLE_THREAD_TID);
+		finalLatency += schedule_with_resource_constraints(fIt, F, &resourceTable, SINGLE_THREAD_TID);
 	}
 
 	unsigned finalArea = get_area_requirement(F);
@@ -3004,23 +3034,16 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
         int64_t finalDeltaLatency = 0;
         int64_t finalDeltaArea = 0;
 
-        std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > execRoots;
-
-
         // this code must go away. 
 	// need to loop through all calls to function to get total latency
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
-                std::vector<TraceGraph_vertex_descriptor>* roots = new std::vector<TraceGraph_vertex_descriptor>;
-		roots->clear();
-		find_root_vertices(*roots, fIt);
-                execRoots[&(*fIt)] = roots; 
 
                 std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
                 resourceTable.clear();
                 initialize_resource_table(F, &resourceTable, false);
 
-		initialLatency += schedule_with_resource_constraints(roots, fIt, F, false, &resourceTable, SINGLE_THREAD_TID);
+		initialLatency += schedule_with_resource_constraints(fIt, F, &resourceTable, SINGLE_THREAD_TID);
 	}
 
 	// check to see if we should abandon search and opt for cpu only implementation
@@ -3106,8 +3129,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
             // Obtain structure pointers outside of the lambda scope so that pass-by-value 
             // gets the right type. 
             auto gradientPointer = &gradient;
-            auto execRootsPointer = &execRoots;
-            group.run([=]{handle_basic_block_gradient(BB, gradientPointer, execRootsPointer, initialLatency, initialArea);});
+            group.run([=]{handle_basic_block_gradient(BB, gradientPointer, initialLatency, initialArea);});
             jobCount++;
           }
 	}
@@ -3152,10 +3174,10 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
               if( (gradient[BB] == 0) || (gradient[BB] < SerialGradientCutoff * min_utility) ) {               
                 //std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
                 seqCount++;
-                handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+                handle_basic_block_gradient(BB, &gradient, initialLatency, initialArea);             
               } else if ( SerialGradientCutoff == 0) {
                 seqCount++;
-                handle_basic_block_gradient(BB, &gradient, &execRoots, initialLatency, initialArea);             
+                handle_basic_block_gradient(BB, &gradient, initialLatency, initialArea);             
               }  else {
                 std::cerr << "Did not recompute gradient " << BB->getName().str() << std::endl;               
               } 
@@ -3239,6 +3261,8 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           std::cerr << "initial area: " << initialArea << "\n";         
           std::cerr << "max coef: " << max_coef << "\n";         
           std::cerr << "max area: " << max_area << "\n";         
+          std::cerr << "max count: " << max_count << "\n";         
+          std::cerr << "max power: " << max_power << "\n";         
           std::cerr << "target  area: " << target_threshold << "\n";         
           std::cerr << "Area_threshold: " << area_threshold << "\n";         
           std::cerr << "Sum: " << sum << "\n";         
@@ -3262,7 +3286,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           // Now, we set up a search to find the 'right' value of alpha. 
           double alpha_step = 1.0;
           double alpha_scaler = 2 * alpha_step;
-          double alpha_step_cutoff = 1.0/(max_power * 2);
+          double alpha_step_cutoff = 1.0/(max_power * 128); // go a few extra steps.
           double last_passing_step = 0;
 
           double alpha_prime = alpha * alpha_scaler;
@@ -3321,6 +3345,10 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
            
           }
 
+          // sometimes, we eliminate too much area.  We should
+          // consider iterating over the removed blocks. There's an
+          // argument that this is not energy efficient?
+
 
           // Ensure that we remove at least one block. Given that we are bumping alpha, this may not be needed.
           if (!foundNonZero) {
@@ -3335,7 +3363,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           }
 
           for(auto it = gradient.begin(); it != gradient.end(); it++) {
-            std::cerr << it->first->getName().str() << ", " << it->second << ", " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << ", " << get_basic_block_instance_count(it->first) << '\n';
+            std::cerr << it->first->getName().str() << "gradient: " << it->second << " area: " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << " count: " << get_basic_block_instance_count(it->first) << '\n';
           }
 
         }
@@ -3347,7 +3375,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
 
 // This does the main work of scheduling the gradient.  It is thread safe.
-void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordered_map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea) {
+void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordered_map<BasicBlock *, double> * gradient, int initialLatency, int initialArea) {
   // get a thread resource id
   int tid;
  
@@ -3409,8 +3437,7 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
   
   for (TraceGraphList_iterator fIt = executionGraph[F].begin();
        fIt != executionGraph[F].end(); fIt++) {
-    std::vector<TraceGraph_vertex_descriptor> *roots = execRoots->find(&(*fIt))->second; 
-    latency += schedule_with_resource_constraints(roots, fIt, F, false, resourceTable, tid);
+    latency += schedule_with_resource_constraints(fIt, F, resourceTable, tid);
   }
 
   tidPool.push(tid);
@@ -3514,80 +3541,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F) {
 }
 #endif
 */
-/*
-#if 0
-// Function: incremental_gradient_descent
-// Performs one incremental step of gradient descent for function F
-// i.e. it will reduce the # of basic block instances for each basic block
-// whose instance is greater than 1 and chose the block which makes the
-// least contribution to performance/area
-// Always return the best area delay product after removal, if no removals exist
-// i.e. all of program is on CPU, return -1
-int AdvisorAnalysis::incremental_gradient_descent(Function *F, BasicBlock *&removeBB) {
-	unsigned minAreaDelay = UINT_MAX;
-	//BasicBlock *removeBB = NULL;
-	removeBB = NULL;
 
-	for (auto BB = F->begin(); BB != F->end(); BB++) {
-		bool modify = false;
-                int count = get_basic_block_instance_count(BB);
-		if (count) {
-                        DEBUG(*outputLog << "Performing removal of basic block " << BB->getName() << "\n");
-			//*outputLog << "decremented successfully. Do analysis.\n";
-			// iterate through all calls to this function in the trace
-			// keep a sum of how long the program takes to finish, will
-			// be multiplied by area for an area delay product estimate
-			unsigned latency = 0;
-			for (TraceGraphList_iterator fIt = executionGraph[F].begin();
-					fIt != executionGraph[F].end(); fIt++) {
-				std::vector<TraceGraph_vertex_descriptor> rootVertices;
-				rootVertices.clear();
-				find_root_vertices(rootVertices, fIt);
-
-				// need to update edge weights before scheduling
-				update_transition_delay(fIt);
-				
-				latency += schedule_with_resource_constraints(rootVertices, fIt, F);
-			}
-
-			DEBUG(*outputLog << "New Latency: " << latency << "\n");
-
-			// if the entire design executes on the CPU, we will use unit
-			// area since no extra area is needed
-			// otherwise each basic block resource is approximated by the
-			// FunctionAreaEstimator class, the *area* incurred only applies
-			// to designs that use limited resources on the FPGA or resources
-			// which may lead to worse performance
-			// i.e. if a basic block requires simple LUT logic to implement,
-			// no extra cost will be incurred as we can assume these resources
-			// are abundant...
-			unsigned area = get_area_requirement(F);
-			DEBUG(*outputLog << "New Area: " << area << "\n");
-			unsigned areaDelay = latency * area;
-			if (areaDelay < minAreaDelay) {
-				// record the basic block whose removal leads
-				// to minimizing area-delay product
-				minAreaDelay = areaDelay;
-				removeBB = BB;
-				*outputLog << "New Minimum Area Delay Product: " << minAreaDelay << "\n";
-			}
-
-			// restore the basic block count after removal
-			increment_basic_block_instance_count(BB);
-		} // else continue
-	}
-
-	// make the best move
-	if (removeBB == NULL) {
-		return -1;
-	} else {
-		*outputLog << "Take incremental step - remove BB " << removeBB->getName() << "\n";
-		decrement_basic_block_instance_count(removeBB);
-		return minAreaDelay;
-	}
-}
-#endif
-*/
 unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 	*outputLog << "Calculating schedule for CPU only execution.\n";
 
@@ -3596,15 +3550,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 	// loop through all calls to function, get total latency
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
-		std::vector<TraceGraph_vertex_descriptor> roots;
-		roots.clear();
-		find_root_vertices(roots, fIt);
-
-                std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
-    	        resourceTable.clear();
-    	        initialize_resource_table(F, &resourceTable, true);
-
-		cpuOnlyLatency += schedule_with_resource_constraints(&roots, fIt, F, true, &resourceTable, SINGLE_THREAD_TID);
+		cpuOnlyLatency += schedule_cpu(fIt, F);
 	}
 
 	return cpuOnlyLatency;
@@ -3616,8 +3562,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 // and the resource constraints embedded in the IR as metadata to determine
 // the latency of the particular function call instance represented by this
 // execution trace
-uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> *roots, 
-                                                             TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid) {
+uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid) {
         DEBUG(*outputLog << __func__ << "\n");
 
 	TraceGraph graph = *graph_it;
@@ -3639,23 +3584,6 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 	int64_t cpuCycle = 1;
 
 	int64_t lastCycle = 1;
-
-
-        // XXX this code is broken -- need to do a topological order. Topo 
-	//===----------------------------------------------------===//
-	// Use breadth first search to perform the scheduling
-	// with resource constraints
-	//===----------------------------------------------------===//
-
-        /*
-        // BFS is broken. 
-	for (std::vector<TraceGraph_vertex_descriptor>::iterator rV = roots->begin();
-			rV != roots->end(); rV++) {
-          ConstrainedScheduleVisitor vis(graph_it, *LT, lastCycle, cpuCycle, resourceTable, tid);
-		boost::breadth_first_search(graph, vertex(0, graph), boost::visitor(vis).root_vertex(*rV));
-		//boost::depth_first_search(graph, boost::visitor(vis).root_vertex(*rV));
-	}
-        */
 
         // build a queue of schedulable BBs from the task graph. In reality, we should build this once and encode it 
         // in the graph datatype as a pointer list. But for now, we can waste time.  
@@ -3747,7 +3675,6 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
   
           int64_t end = start;
           int64_t block_free = start;
-          // Above here.
           // Assign endpoint based on cpu or accelerator.
           if(cpu) {
             end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
@@ -3797,6 +3724,266 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(std::vector<TraceGr
 }
 
 
+uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable) {
+        DEBUG(*outputLog << __func__ << "\n");
+
+	TraceGraph graph = *graph_it;
+	// perform the scheduling with resource considerations
+	
+	// use hash table to keep track of resources available
+	// the key is the basicblock resource	
+	// each key indexes into a vector of unsigned integers
+	// the number of elements in the vector correspond to the
+	// number of available resources of that basic block
+	// the vector contains unsigned ints which represent the cycle
+	// at which the resource next becomes available
+	// the bool of the pair in the value is the CPU resource flag
+	// if set to true, no additional hardware is required
+	// however, a global value is used to keep track of the cpu
+	// idleness
+
+	int64_t lastCycle = 1;
+
+
+        // build a queue of schedulable BBs from the task graph. In reality, we should build this once and encode it 
+        // in the graph datatype as a pointer list. But for now, we can waste time.  
+        std::queue<TraceGraph_vertex_descriptor> schedulableBB;
+       	TraceGraph_iterator vi, ve;
+
+        // set the vertices up with zero values for this tid. 
+	for (boost::tie(vi, ve) = vertices(graph); vi != ve; vi++) {
+          // Mark node as unscheduled, with a count of its parent 
+          // dependencies. Once a node hits zero, it can be scheduled. 
+          // this gives us the O(V+E) runtime we want. 
+          auto degree = boost::in_degree(*vi, graph);
+          if (degree == 0) { 
+            schedulableBB.push(*vi);
+          } else {
+            // Is this in the graph?
+            graph[*vi].set_start(-1 * degree, SINGLE_THREAD_TID);
+          } 
+        }
+
+        while (!schedulableBB.empty()) {
+        
+          TraceGraph_vertex_descriptor v = schedulableBB.front();
+
+          //std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
+
+          schedulableBB.pop();
+
+          assert((graph[v].get_start(SINGLE_THREAD_TID) == 0) || (graph[v].get_start(SINGLE_THREAD_TID) == -1)); 
+
+          // if we changed how we handle the vector and made it an array, we could do much better. 
+
+          // find the latest finishing parent
+          // if no parent, start at 0          
+          int64_t start = -1;
+
+          // Probably we can refactor this to remove the loop. This might help us. 
+          TraceGraph_in_edge_iterator ii, ie;
+          for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
+            TraceGraph_vertex_descriptor s = boost::source(*ii, graph);
+            
+            start = std::max(start, (int64_t) graph[s].get_end(SINGLE_THREAD_TID));
+          }
+          start += 1;
+          //std::cerr << "start: " << start << "\n";  
+
+          BasicBlock *BB = graph[v].basicblock;
+  
+          // this differs from the maximal parallelism configuration scheduling
+          // in that it also considers resource requirement
+          // Above here
+          // first sort the vector
+          auto search = resourceTable->find(BB);
+
+          //assert(search != resourceTable.end());
+          //DEBUG(if (search == resourceTable.end()) {
+          //	// if not found, could mean that either
+          //	// a) basic block to be executed on cpu
+          //	// b) resource table not initialized properly o.o
+          //	std::cerr << "Basic block " << (*graph_ref)[v].name << " not found in resource table.\n";
+          //	assert(0);
+          //  })
+  
+          int64_t resourceReady = UINT_MAX;
+          unsigned minIdx;
+
+          // should we do something with start. It may be that there will be a
+          // unit we could use before hand, but we will instead use an earlier available unit.
+
+          std::vector<unsigned> &resourceVector = search->second.second;
+          // find the minimum index
+          for(unsigned idx = 0; idx < resourceVector.size(); idx++) {
+            if(resourceVector[idx] < resourceReady) {
+              minIdx = idx;
+              resourceReady = resourceVector[idx];        
+            }
+          }
+          
+          //std::cerr << "resourceReady: " << resourceReady << "\n";  
+
+          // If there is no resource available, we will create a new one. 
+          if(start < resourceReady) {
+            //std::cerr << "Adding resource, total is: " << resourceVector.size() + 1 << " \n";  
+            minIdx = resourceVector.size();
+            resourceVector.push_back((unsigned)start);          
+            resourceReady = start; // we actually have the resource now.  
+          }
+  
+          start = std::max(resourceReady, start);
+
+          int64_t end = start;
+          int64_t block_free = start;
+          // Assign endpoint based on cpu or accelerator.
+          if (AssumePipelining) {
+            int pipeline_latency = (int) AssumePipelining;
+            end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
+            block_free += std::min(pipeline_latency, FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB));
+          } else {
+            end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
+            block_free += end;
+          }
+  
+          //std::cerr << "end: " << end << "\n";  
+          //std::cerr << "block_free: " << block_free << "\n";  
+
+          // update the occupied resource with the new end cycle
+          resourceVector[minIdx] = block_free;  
+  
+          //std::cerr << "Schedule vertex: " << graph[v].basicblock->getName().str() <<
+          //  " start: " << start << " end: " << end << "\n";
+          graph[v].set_min_start(start);
+          graph[v].set_min_end(end);
+          graph[v].set_start(start, SINGLE_THREAD_TID);
+          graph[v].set_end(end, SINGLE_THREAD_TID);
+  
+          //std::cerr << "VERTEX [" << v << "] START: " << (*graph_ref)[v].get_start() << " END: " << (*graph_ref)[v].get_end() << "\n";
+  
+          // keep track of last cycle as seen by scheduler
+          lastCycle = std::max(lastCycle, end);
+
+          // Mark up children as visited.
+          auto oPair = boost::out_edges(v, graph);
+          auto oi = oPair.first;
+          auto oe = oPair.second;
+          for (; oi != oe; oi++) {
+            TraceGraph_vertex_descriptor s = boost::target(*oi, graph);
+            if(graph[s].get_start(SINGLE_THREAD_TID) == -1) {
+              // we can now schedule this one. 
+              schedulableBB.push(s);
+            } else {
+              graph[s].set_start(graph[s].get_start(SINGLE_THREAD_TID) + 1, SINGLE_THREAD_TID);
+            }
+          }
+        }
+
+        //std::cerr << "LastCycle: " << lastCycle << "\n";
+
+	return lastCycle;
+}
+
+uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Function *F) {
+        DEBUG(*outputLog << __func__ << "\n");
+
+	TraceGraph graph = *graph_it;
+	// perform the scheduling with resource considerations
+	
+	// use hash table to keep track of resources available
+	// the key is the basicblock resource	
+	// each key indexes into a vector of unsigned integers
+	// the number of elements in the vector correspond to the
+	// number of available resources of that basic block
+	// the vector contains unsigned ints which represent the cycle
+	// at which the resource next becomes available
+	// the bool of the pair in the value is the CPU resource flag
+	// if set to true, no additional hardware is required
+	// however, a global value is used to keep track of the cpu
+	// idleness
+
+	// reset the cpu free cycle global!
+	int64_t cpuCycle = 1;
+
+	int64_t lastCycle = 1;
+
+
+        // build a queue of schedulable BBs from the task graph. In reality, we should build this once and encode it 
+        // in the graph datatype as a pointer list. But for now, we can waste time.  
+        std::queue<TraceGraph_vertex_descriptor> schedulableBB;
+       	TraceGraph_iterator vi, ve;
+
+        // set the vertices up with zero values for this tid. 
+	for (boost::tie(vi, ve) = vertices(graph); vi != ve; vi++) {
+          // Mark node as unscheduled, with a count of its parent 
+          // dependencies. Once a node hits zero, it can be scheduled. 
+          // this gives us the O(V+E) runtime we want. 
+          auto degree = boost::in_degree(*vi, graph);
+          if (degree == 0) { 
+            schedulableBB.push(*vi);
+          } else {
+            // Is this in the graph?
+            graph[*vi].set_start(-1 * degree, SINGLE_THREAD_TID);
+          } 
+        }
+
+        while (!schedulableBB.empty()) {
+        
+          TraceGraph_vertex_descriptor v = schedulableBB.front();
+
+          schedulableBB.pop();
+
+          assert((graph[v].get_start(SINGLE_THREAD_TID) == 0) || (graph[v].get_start(SINGLE_THREAD_TID) == -1)); 
+
+          // if we changed how we handle the vector and made it an array, we could do much better. 
+
+          // find the latest finishing parent
+          // if no parent, start at 0          
+          int64_t start = -1;
+
+          // Probably we can refactor this to remove the loop. This might help us. 
+          TraceGraph_in_edge_iterator ii, ie;
+          for (boost::tie(ii, ie) = boost::in_edges(v, graph); ii != ie; ii++) {
+            TraceGraph_vertex_descriptor s = boost::source(*ii, graph);
+            start = std::max(start, (int64_t) graph[s].get_end(SINGLE_THREAD_TID));
+          }
+          start += 1;
+  
+          BasicBlock *BB = graph[v].basicblock;
+  
+          start = std::max(cpuCycle, start);
+
+          int64_t end = start;
+          int64_t block_free = start;
+          // Assign endpoint based on cpu or accelerator.
+          end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
+          cpuCycle = end;
+
+          graph[v].set_start(start, SINGLE_THREAD_TID);
+          graph[v].set_end(end, SINGLE_THREAD_TID);
+
+          // keep track of last cycle as seen by scheduler
+          lastCycle = std::max(lastCycle, end);
+
+          // Mark up children as visited.
+          auto oPair = boost::out_edges(v, graph);
+          auto oi = oPair.first;
+          auto oe = oPair.second;
+          for (; oi != oe; oi++) {
+            TraceGraph_vertex_descriptor s = boost::target(*oi, graph);
+            if(graph[s].get_start(SINGLE_THREAD_TID) == -1) {
+              // we can now schedule this one. 
+              schedulableBB.push(s);
+            } else {
+              graph[s].set_start(graph[s].get_start(SINGLE_THREAD_TID) + 1, SINGLE_THREAD_TID);
+            }
+          }
+        }
+
+	return lastCycle;
+}
+
+
 // Function: find_root_vertices
 // Finds all vertices with in degree 0 -- root of subgraph/tree
 void AdvisorAnalysis::find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it) {
@@ -3827,10 +4014,11 @@ void AdvisorAnalysis::set_all_thread_pool_basic_block_instance_counts(BasicBlock
 // Resizes the thread pool resource tables after a gradient step
 void AdvisorAnalysis::adjust_all_thread_pool_resource_tables(BasicBlock *BB, int value) {
   for (auto it = threadPoolResourceTables.begin(); it != threadPoolResourceTables.end(); it++) {
-    (*it).second->at(BB).second.resize(value);
     // if we went cpu only, set the first member to true
     if(value <= 0) {
       (*it).second->at(BB).first = true;
+    } else { 
+      (*it).second->at(BB).second.resize(value);
     }
   }
 }
@@ -4286,10 +4474,13 @@ void AdvisorAnalysis::modify_resource_requirement(Function *F, TraceGraphList_it
 
 
 
+
+
 // this is not super optimal due to things like false sharing. But it is easier to code.
 BBSchedElem::BBSchedElem() {
   cycStart = new int[UseThreads];
   cycEnd = new int[UseThreads];
+  minCycStart = -1;
 }
 
 void ScheduleVisitor::discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph) {
@@ -4370,7 +4561,7 @@ void ConstrainedScheduleVisitor::discover_vertex(TraceGraph_vertex_descriptor v,
   // should we do something with start. It may be that there will be a
   // unit we could use before hand, but we will instead use an earlier available unit.
 
-  std::vector<unsigned> resourceVector = search->second.second;
+  std::vector<unsigned> &resourceVector = search->second.second;
   if (cpu) { // cpu resource flag
     resourceReady = *cpuCycle_ref;
   } else {

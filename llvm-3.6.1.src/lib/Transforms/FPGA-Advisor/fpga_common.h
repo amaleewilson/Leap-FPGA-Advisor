@@ -752,7 +752,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
                 void set_all_thread_pool_basic_block_instance_counts(BasicBlock *BB, int value); 
                 void set_thread_pool_basic_block_instance_count(BasicBlock *BB, int value);
                 int  get_thread_pool_basic_block_instance_count(BasicBlock *BB);
-                void handle_basic_block_gradient(BasicBlock * BB, std::unordered_map<BasicBlock *, double> * gradient, std::unordered_map<TraceGraph *, std::vector<TraceGraph_vertex_descriptor>* > * execRoots, int initialLatency, int initialArea);
+                void handle_basic_block_gradient(BasicBlock * BB, std::unordered_map<BasicBlock *, double> * gradient, int initialLatency, int initialArea);
 
                 // Create a TBB queue to give thread ids to the TBB threads.
                 boost::lockfree::stack<int> tidPool;  
@@ -813,7 +813,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool true_dependence_exists(Instruction *inst1, Instruction *inst2);
 		bool basicblock_control_flow_dependent(BasicBlock *child, BasicBlock *parent, TraceGraph &graph);
 		void find_new_parents(std::vector<TraceGraph_vertex_descriptor> &newParents, TraceGraph_vertex_descriptor child, TraceGraph_vertex_descriptor parent, TraceGraph &graph);
-		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int &lastCycle);
+		bool annotate_schedule_for_call(Function *F, TraceGraphList_iterator graph_it, int &lastCycle);
 		bool find_maximal_resource_requirement(Function *F, TraceGraphList_iterator graph_it, std::vector<TraceGraph_vertex_descriptor> &rootVertices, int lastCycle);
 		bool latest_parent(TraceGraph_out_edge_iterator edge, TraceGraphList_iterator graph);
 		void modify_resource_requirement(Function *F, TraceGraphList_iterator graph_it);
@@ -830,7 +830,9 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		bool increment_basic_block_instance_count_and_update_transition(BasicBlock *BB);
 		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
-  uint64_t schedule_with_resource_constraints(std::vector<TraceGraph_vertex_descriptor> *roots, TraceGraphList_iterator graph_it, Function *F, bool cpuOnly, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid);
+  uint64_t schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid);
+  uint64_t schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
+  uint64_t schedule_cpu(TraceGraphList_iterator graph_it, Function *F);
 		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly); 
 		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
@@ -894,14 +896,14 @@ class TraceGraphVertexWriter {
 				<< graph[v].cycEnd << "\"]";
 			*/
 			out << "[shape=\"none\" label=<<table border=\"0\" cellspacing=\"0\">";
-			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_start(SINGLE_THREAD_TID) << "</td></tr>";
+			out	<< "<tr><td bgcolor=\"#AEFDFD\" border=\"1\"> " << graph[v].get_min_start() << "</td></tr>";
 			if (parent->get_basic_block_instance_count(graph[v].basicblock) > 0) {
 			//if (get_basic_block_instance_count_meta(graph[v].basicblock) > 0) {
 				out	<< "<tr><td bgcolor=\"#FFFF33\" border=\"1\"> " << graph[v].name << " (" << v << ")" << "</td></tr>";
 			} else {
 				out	<< "<tr><td bgcolor=\"#FFFFFF\" border=\"1\"> " << graph[v].name << " (" << v << ") " << "</td></tr>";
 			}
-			out	<< "<tr><td bgcolor=\"#AEFDFD\"  border=\"1\"> " << graph[v].get_end(SINGLE_THREAD_TID) << "</td></tr>";
+			out	<< "<tr><td bgcolor=\"#AEFDFD\"  border=\"1\"> " << graph[v].get_min_end() << "</td></tr>";
 			out	<< "</table>>]";
 		}
 	private:
