@@ -1899,7 +1899,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
     int blockCount = itRT->second.second.size();
     BasicBlock *BB = itRT->first;
 
-    std::cerr << " For Block " << BB->getName().str() << " count is " << blockCount << std::endl;
+    std::cerr << " For Block " << BB->getName().str() << " count is " << blockCount << " cpu: " << itRT->second.first <<std::endl;
 
     set_all_thread_pool_basic_block_instance_counts(BB, blockCount);
     set_basic_block_instance_count(BB, blockCount);
@@ -2901,6 +2901,8 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	cpuOnlyLatency = get_cpu_only_latency(F);
         std::cerr << "CPU-only latency: " << cpuOnlyLatency << "\n";
 
+        dumpBlockCounts(F, cpuOnlyLatency);
+
 	// we care about area and delay
 	unsigned area = UINT_MAX;
 	//unsigned delay = UINT_MAX;
@@ -3608,6 +3610,8 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
         
           TraceGraph_vertex_descriptor v = schedulableBB.front();
 
+          std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
+
           schedulableBB.pop();
 
           assert((graph[v].get_start(tid) == 0) || (graph[v].get_start(tid) == -1)); 
@@ -3634,6 +3638,7 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
             //std::cerr << "NEW START: " << start << "\n";
           }
           start += 1;
+          std::cerr << "deps ready: " << start << "\n";  
   
           BasicBlock *BB = graph[v].basicblock;
   
@@ -3658,7 +3663,7 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
           // should we do something with start. It may be that there will be a
           // unit we could use before hand, but we will instead use an earlier available unit.
 
-          std::vector<unsigned> resourceVector = search->second.second;
+          std::vector<unsigned> &resourceVector = search->second.second;
           if (cpu) { // cpu resource flag
             resourceReady = cpuCycle;
           } else {
@@ -3671,21 +3676,34 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
             }
           }
           
+          std::cerr << "resource count: " << resourceVector.size() << "\n";  
+
           start = std::max(start, resourceReady);
   
+          std::cerr << "start: " << start << "\n";  
+
+          std::cerr << "resourceReady: " << resourceReady << "\n";  
+
           int64_t end = start;
           int64_t block_free = start;
           // Assign endpoint based on cpu or accelerator.
           if(cpu) {
             end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
+            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_cpu(*LT, BB) << "\n";  
           } else if (AssumePipelining) {
             int pipeline_latency = (int) AssumePipelining;
             end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
             block_free += std::min(pipeline_latency, FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB));
+            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
           } else {
             end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
-            block_free += end;
+            block_free = end;
+            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
           }
+
+            std::cerr << "end: " << end << "\n";  
+          std::cerr << "end: " << end << "\n";  
+          std::cerr << "block_free: " << block_free << "\n";  
   
           // update the occupied resource with the new end cycle
           if (cpu) {
@@ -3822,6 +3840,7 @@ uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_i
             }
           }
           
+          //std::cerr << "resource count: " << resourceVector.size() << "\n";  
           //std::cerr << "resourceReady: " << resourceReady << "\n";  
 
           // If there is no resource available, we will create a new one. 
@@ -3843,7 +3862,7 @@ uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_i
             block_free += std::min(pipeline_latency, FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB));
           } else {
             end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
-            block_free += end;
+            block_free = end;
           }
   
           //std::cerr << "end: " << end << "\n";  
@@ -3935,6 +3954,8 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
 
           assert((graph[v].get_start(SINGLE_THREAD_TID) == 0) || (graph[v].get_start(SINGLE_THREAD_TID) == -1)); 
 
+          std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
+
           // if we changed how we handle the vector and made it an array, we could do much better. 
 
           // find the latest finishing parent
@@ -3948,16 +3969,23 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
             start = std::max(start, (int64_t) graph[s].get_end(SINGLE_THREAD_TID));
           }
           start += 1;
-  
+          std::cerr << "deps ready: " << start << "\n";    
+
           BasicBlock *BB = graph[v].basicblock;
   
           start = std::max(cpuCycle, start);
+
+          std::cerr << "start: " << start << "\n";  
+
+          std::cerr << "resourceReady: " << cpuCycle << "\n";  
 
           int64_t end = start;
           int64_t block_free = start;
           // Assign endpoint based on cpu or accelerator.
           end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
           cpuCycle = end;
+
+          std::cerr << "end: " << end << "\n";  
 
           graph[v].set_start(start, SINGLE_THREAD_TID);
           graph[v].set_end(end, SINGLE_THREAD_TID);
@@ -4364,6 +4392,39 @@ bool AdvisorAnalysis::prune_basic_block_configuration_to_device_area(Function *F
   }
 
   return true;
+}
+
+void AdvisorAnalysis::dumpBlockCounts(Function *F, unsigned cpuLatency = 0) {
+  std::unordered_map<BasicBlock *, unsigned> blockCounts;
+  TraceGraph_iterator vi, ve;
+
+  for (TraceGraphList_iterator fIt = executionGraph[F].begin();
+       fIt != executionGraph[F].end(); fIt++) {
+    TraceGraph graph = *fIt;
+    // set the vertices up with zero values for this tid. 
+    for (boost::tie(vi, ve) = vertices(graph); vi != ve; vi++) {
+      auto BB = graph[*vi].basicblock;
+      if (blockCounts.find(BB) != blockCounts.end()) {
+        blockCounts[BB] = blockCounts[BB] + 1;
+      } else {
+        blockCounts[BB] = 1;
+      }
+    }
+  }
+
+
+  // Dump block counts
+  for (auto blockIt = blockCounts.begin(); blockIt != blockCounts.end(); blockIt++) {
+    auto BB = (*blockIt).first;
+    auto count = (*blockIt).second;
+    uint64_t totalCycles = count * (uint64_t) FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
+    std::cerr << "Basic block: " << BB->getName().str() << " count: " << count << " cpu latency: " << totalCycles; 
+    if(cpuLatency != 0) {
+      std::cerr << " fraction of total latency: " << ((double)(totalCycles)/((double)cpuLatency));
+    }
+    std::cerr << std::endl;
+  }
+ 
 }
 
 
