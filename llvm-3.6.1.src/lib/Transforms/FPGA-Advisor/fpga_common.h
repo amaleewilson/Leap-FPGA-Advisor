@@ -695,10 +695,10 @@ class ConstrainedScheduleVisitor : public boost::default_bfs_visitor {
 		int mutable lastCycle;
 		int64_t *lastCycle_ref;
 		int64_t *cpuCycle_ref;
-                std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable; 
+                std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable; 
                 int tid;
 
-  ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int64_t &lastCycle, int64_t &cpuCycle, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *_resourceTable, int _tid) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable), tid(_tid) {}
+  ConstrainedScheduleVisitor(TraceGraphList_iterator graph, std::map<BasicBlock *, LatencyStruct> &_LT, int64_t &lastCycle, int64_t &cpuCycle, std::unordered_map<BasicBlock *,  std::vector<unsigned> > *_resourceTable, int _tid) : graph_ref(graph), LT(_LT), lastCycle_ref(&lastCycle), cpuCycle_ref(&cpuCycle),  resourceTable(_resourceTable), tid(_tid) {}
 
   void discover_vertex(TraceGraph_vertex_descriptor v, const TraceGraph &graph);
 
@@ -760,7 +760,7 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
                 // state for each thread. We index these by basic block, such that we might have a thread per basic block. 
                 std::unordered_map<BasicBlock*, int> bbInstanceCounts;
                 std::unordered_map<BasicBlock *, std::unordered_map<BasicBlock*,int>* > threadPoolInstanceCounts;
-                std::unordered_map<BasicBlock *, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >* > threadPoolResourceTables;
+                std::unordered_map<BasicBlock *, std::unordered_map<BasicBlock *, std::vector<unsigned> >* > threadPoolResourceTables;
 
                  
 	private:
@@ -831,10 +831,10 @@ class AdvisorAnalysis : public ModulePass, public InstVisitor<AdvisorAnalysis> {
 		void decrement_all_basic_block_instance_count_and_update_transition(Function *F);
 		void find_root_vertices(std::vector<TraceGraph_vertex_descriptor> &roots, TraceGraphList_iterator graph_it);
   void dumpBlockCounts(Function *F, unsigned cpuLatency);
-  uint64_t schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid);
-  uint64_t schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable);
+  uint64_t schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *,  std::vector<unsigned> > *resourceTable, int tid);
+  uint64_t schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable);
   uint64_t schedule_cpu(TraceGraphList_iterator graph_it, Function *F);
-		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly); 
+		void initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable, bool cpuOnly); 
 		unsigned get_cpu_only_latency(Function *F);
 		unsigned get_area_requirement(Function *F);
 		void update_transition_delay(TraceGraphList_iterator graph);

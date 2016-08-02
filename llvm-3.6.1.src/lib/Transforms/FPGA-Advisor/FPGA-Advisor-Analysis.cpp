@@ -163,7 +163,7 @@ static cl::opt<unsigned int> RapidConvergence("rapid-convergence", cl::desc("spe
 		cl::Hidden, cl::init(5));
 
 static cl::opt<unsigned int> UseThreads("use-threads", cl::desc("specify number of threads to use in gradient descent"),
-		cl::Hidden, cl::init(1));
+		cl::Hidden, cl::init(8));
 
 static cl::opt<unsigned int> SerialGradientCutoff("serial-cutoff", cl::desc("specifies lower bound for computation of serial gradient"),
 		cl::Hidden, cl::init(0));
@@ -1843,7 +1843,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
   TraceGraphList_iterator fIt;
   ExecutionOrderList_iterator eoIt;
   // Define a resource table here. this will be expanded as we schedule the graphs
-  std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+  std::unordered_map<BasicBlock *, std::vector<unsigned> > resourceTable;
   resourceTable.clear();
   initialize_resource_table(F, &resourceTable, false);
 
@@ -1873,7 +1873,7 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
 
     // reset resource availability table
     for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {
-      for (auto itRV = itRT->second.second.begin(); itRV != itRT->second.second.end(); itRV++) {
+      for (auto itRV = itRT->second.begin(); itRV != itRT->second.end(); itRV++) {
         *itRV = 0;
       }
     }
@@ -1896,10 +1896,10 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
   // we have now found the best solution for the graph. We will update
   // the best possible configuration for the function.
   for (auto itRT = resourceTable.begin(); itRT != resourceTable.end(); itRT++) {
-    int blockCount = itRT->second.second.size();
+    int blockCount = itRT->second.size();
     BasicBlock *BB = itRT->first;
 
-    std::cerr << " For Block " << BB->getName().str() << " count is " << blockCount << " cpu: " << itRT->second.first <<std::endl;
+    std::cerr << " For Block " << BB->getName().str() << " count is " << blockCount  <<std::endl;
 
     set_all_thread_pool_basic_block_instance_counts(BB, blockCount);
     set_basic_block_instance_count(BB, blockCount);
@@ -2921,7 +2921,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
         for (auto BB = F->begin(); BB != F->end(); BB++) {
           gradients[BB] = new Gradient();
           gradient[BB] = 0; 
-          std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable = new std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >();
+          std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable = new std::unordered_map<BasicBlock *, std::vector<unsigned> >();
           resourceTable->clear();
           initialize_resource_table(F, resourceTable, false);
           threadPoolResourceTables[BB] = resourceTable;
@@ -2993,7 +2993,7 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	unsigned finalLatency = 0;
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
-                std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+                std::unordered_map<BasicBlock *, std::vector<unsigned> > resourceTable;
     	        resourceTable.clear();
     	        initialize_resource_table(F, &resourceTable, false);
 
@@ -3008,6 +3008,8 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	std::cerr << "Accelerator Only Area: " << fpgaOnlyArea << "\n";
 	std::cerr << "Final Latency: " << finalLatency << "\n";
 	std::cerr << "Final Area: " << finalArea << "\n";
+              
+        //exit(0);
 
 }
 
@@ -3041,7 +3043,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 	for (TraceGraphList_iterator fIt = executionGraph[F].begin();
 		fIt != executionGraph[F].end(); fIt++) {
 
-                std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+                std::unordered_map<BasicBlock *, std::vector<unsigned> > resourceTable;
                 resourceTable.clear();
                 initialize_resource_table(F, &resourceTable, false);
 
@@ -3088,7 +3090,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 
         // we will reuse resource table to avoid all those ugly calls to malloc. 
         // Really, the table could be hoisted even higher, and that will come at some point. 
-        std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > resourceTable;
+        std::unordered_map<BasicBlock *, std::vector<unsigned> > resourceTable;
         resourceTable.clear();
         initialize_resource_table(F, &resourceTable, false);
 
@@ -3105,9 +3107,8 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		//if (decrement_basic_block_instance_count(BB)) {
                 auto search = resourceTable.find(BB);
-                std::vector<unsigned> &resourceVector = search->second.second;                
+                std::vector<unsigned> &resourceVector = search->second;                
                 int count = resourceVector.size();
-
                 if(count == 1) {
                   blocks.push_back(BB);                 
                 } else if (count > 1) {                  
@@ -3122,9 +3123,9 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           //if (decrement_basic_block_instance_count(BB)) {
           BasicBlock *BB = *itBB;
           auto search = resourceTable.find(BB);
-          std::vector<unsigned> &resourceVector = search->second.second;                
+          std::vector<unsigned> &resourceVector = search->second;                
           int count = resourceVector.size();
-          //std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
+          // std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
           if(((count > 1) || ParallelizeOneZero) && (UseThreads > 1)) {
             // farm out a parallel job.    
             //std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
@@ -3139,7 +3140,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
         // make sure that all jobs have quiesced.
         group.wait();
         uint64_t par_finish = rdtsc(); 
-        std::cerr << "Parallel region cycle count: " << (par_finish - par_start) << " Use Threads " << UseThreads <<std::endl;
+        std::cerr << "Parallel region cycle count : " << (par_finish - par_start) << " Use Threads " << UseThreads <<std::endl;
         if(jobCount > 0) {
           std::cerr << " By threads " << (par_finish - par_start)/jobCount  << std::endl; 
         } 
@@ -3165,7 +3166,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
             //if (decrement_basic_block_instance_count(BB)) {
             BasicBlock *BB = *itBB;
             auto search = resourceTable.find(BB);
-            std::vector<unsigned> &resourceVector = search->second.second;                
+            std::vector<unsigned> &resourceVector = search->second;                
             int count = resourceVector.size();
             // Check gradients to see if we need to recalculate.
             // In this case, we use the last gradient we
@@ -3174,10 +3175,11 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
                     
             if((count == 1) || (UseThreads == 1)) {
               if( (gradient[BB] == 0) || (gradient[BB] < SerialGradientCutoff * min_utility) ) {               
-                //std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
+                std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
                 seqCount++;
                 handle_basic_block_gradient(BB, &gradient, initialLatency, initialArea);             
               } else if ( SerialGradientCutoff == 0) {
+                std::cerr << "Serial job for " << BB->getName().str() << std::endl;               
                 seqCount++;
                 handle_basic_block_gradient(BB, &gradient, initialLatency, initialArea);             
               }  else {
@@ -3365,7 +3367,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           }
 
           for(auto it = gradient.begin(); it != gradient.end(); it++) {
-            std::cerr << it->first->getName().str() << "gradient: " << it->second << " area: " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << " count: " << get_basic_block_instance_count(it->first) << '\n';
+            std::cerr << it->first->getName().str() << " gradient: " << it->second << " area: " << FunctionAreaEstimator::get_basic_block_area(*AT, it->first) << " count: " << get_basic_block_instance_count(it->first) << '\n';
           }
 
         }
@@ -3385,14 +3387,14 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
   assert(succ);
 
   // find the resourceTable associated with this block.
-  std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > >* resourceTable;
+  std::unordered_map<BasicBlock *, std::vector<unsigned> >* resourceTable;
   resourceTable = threadPoolResourceTables.find(BB)->second;
   std::unordered_map<BasicBlock*,int>* instanceCounts = threadPoolInstanceCounts.find(BB)->second; 
 
   Function *F = BB->getParent();
 
   auto search = resourceTable->find(BB);
-  std::vector<unsigned> &resourceVector = search->second.second;                
+  std::vector<unsigned> &resourceVector = search->second;                
   int count = resourceVector.size();
 
   // Provisionally remove block
@@ -3416,11 +3418,6 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
     update_transition(BB);
   }
 
-  // need to set the cpu flag in case we set count to 0
-  if((count == 1) && ParallelizeOneZero) {
-    search->second.first = true;
-  }
-
   resourceVector.pop_back();
     
   DEBUG(*outputLog << "Performing removal of basic block " << BB->getName() << "\n");
@@ -3432,7 +3429,7 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
   // Really we should do our own maintainence here so as to reduce overhead. 
   // One could even have a pool of these things reinitialized by a worker thread. 
   for (auto itRT = resourceTable->begin(); itRT != resourceTable->end(); itRT++) {
-    for (auto itRV = itRT->second.second.begin(); itRV != itRT->second.second.end(); itRV++) {
+    for (auto itRV = itRT->second.begin(); itRV != itRT->second.end(); itRV++) {
       *itRV = 0;
     }
   }
@@ -3469,13 +3466,9 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
   // we use the below find syntax to ensure thread safety.
   gradient->find(BB)->second = marginalPerformance;                  
    
+
   // restore the basic block count after removal
   increment_thread_pool_basic_block_instance_count(BB);
-
-  // need to set the cpu flag in case we set count to 0
-  if((count == 1) && ParallelizeOneZero) {
-    search->second.first = false;
-  }  
 
   // If we went ACC -> CPU, we need to fixup transition times. 
   if((count == 1) && !ParallelizeOneZero) {
@@ -3484,14 +3477,14 @@ void AdvisorAnalysis::handle_basic_block_gradient(BasicBlock * BB, std::unordere
 
   resourceVector.push_back(0);
   
-  //{
-  //   std::unique_lock<std::mutex> lk(threadPoolMutex);
-  //   std::cerr << "Done with block" << BB->getName().str() << " grad: " << marginalPerformance << "delta latency" << deltaLatency << "delta area" << deltaArea << std::endl;
-  //   std::cerr << "New latency: " << latency << "\n";
-  //   std::cerr << "New area: " << area << "\n";    
-  //   std::cerr << "Initial latency: " << initialLatency << "\n";
-  //   std::cerr << "initial area: " << initialArea << "\n";    
-  //}
+  /*{
+     std::unique_lock<std::mutex> lk(threadPoolMutex);
+     std::cerr << "Done with block" << BB->getName().str() << " grad: " << marginalPerformance << "delta latency" << deltaLatency << "delta area" << deltaArea << std::endl;
+     std::cerr << "New latency: " << latency << "\n";
+     std::cerr << "New area: " << area << "\n";    
+     std::cerr << "Initial latency: " << initialLatency << "\n";
+     std::cerr << "initial area: " << initialArea << "\n";    
+     }*/
 
 }
 
@@ -3564,7 +3557,7 @@ unsigned AdvisorAnalysis::get_cpu_only_latency(Function *F) {
 // and the resource constraints embedded in the IR as metadata to determine
 // the latency of the particular function call instance represented by this
 // execution trace
-uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, int tid) {
+uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *,  std::vector<unsigned> > *resourceTable, int tid) {
         DEBUG(*outputLog << __func__ << "\n");
 
 	TraceGraph graph = *graph_it;
@@ -3610,7 +3603,7 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
         
           TraceGraph_vertex_descriptor v = schedulableBB.front();
 
-          std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
+          //std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
 
           schedulableBB.pop();
 
@@ -3630,15 +3623,11 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
             //std::cerr << (*graph_ref)[s].ID << " -> " << (*graph_ref)[t].ID << "\n";
             int64_t transitionDelay = (int) boost::get(boost::edge_weight_t(), graph, *ii);
             
-            //std::cerr << "MINIMUM END CYCLE FOR EDGE: " << (*graph_ref)[s].get_end() << "\n";
-            //std::cerr << "TRANSITION DELAY: " << transitionDelay << "\n";
-            //std::cerr << "MAX START: " << start << "\n";
-            
             start = std::max(start, graph[s].get_end(tid) + transitionDelay);
             //std::cerr << "NEW START: " << start << "\n";
           }
           start += 1;
-          std::cerr << "deps ready: " << start << "\n";  
+          //std::cerr << "deps ready: " << start << "\n";  
   
           BasicBlock *BB = graph[v].basicblock;
   
@@ -3656,14 +3645,14 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
           //	assert(0);
           //  })
   
-          bool cpu = (search->second).first;
           int64_t resourceReady = UINT_MAX;
           unsigned minIdx;
 
           // should we do something with start. It may be that there will be a
           // unit we could use before hand, but we will instead use an earlier available unit.
+          std::vector<unsigned> &resourceVector = search->second;
+          bool cpu = (resourceVector.size() == 0);
 
-          std::vector<unsigned> &resourceVector = search->second.second;
           if (cpu) { // cpu resource flag
             resourceReady = cpuCycle;
           } else {
@@ -3676,34 +3665,33 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
             }
           }
           
-          std::cerr << "resource count: " << resourceVector.size() << "\n";  
+          //std::cerr << "resource count: " << resourceVector.size() << "\n";  
 
           start = std::max(start, resourceReady);
   
-          std::cerr << "start: " << start << "\n";  
+          //std::cerr << "start: " << start << "\n";  
 
-          std::cerr << "resourceReady: " << resourceReady << "\n";  
+          //std::cerr << "resourceReady: " << resourceReady << "\n";  
 
           int64_t end = start;
           int64_t block_free = start;
           // Assign endpoint based on cpu or accelerator.
           if(cpu) {
             end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
-            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_cpu(*LT, BB) << "\n";  
+            //std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_cpu(*LT, BB) << "\n";  
           } else if (AssumePipelining) {
             int pipeline_latency = (int) AssumePipelining;
             end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
             block_free += std::min(pipeline_latency, FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB));
-            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
+            //std::cerr << "acc latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
           } else {
             end += FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB);
             block_free = end;
-            std::cerr << "cpu latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
+            //std::cerr << "acc latency: " << FunctionScheduler::get_basic_block_latency_accelerator(*LT, BB) << "\n";  
           }
-
-            std::cerr << "end: " << end << "\n";  
-          std::cerr << "end: " << end << "\n";  
-          std::cerr << "block_free: " << block_free << "\n";  
+         
+          //std::cerr << "end: " << end << "\n";  
+          //std::cerr << "block_free: " << block_free << "\n";  
   
           // update the occupied resource with the new end cycle
           if (cpu) {
@@ -3742,7 +3730,7 @@ uint64_t AdvisorAnalysis::schedule_with_resource_constraints(TraceGraphList_iter
 }
 
 
-uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable) {
+uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_iterator graph_it, Function *F, std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable) {
         DEBUG(*outputLog << __func__ << "\n");
 
 	TraceGraph graph = *graph_it;
@@ -3831,7 +3819,7 @@ uint64_t AdvisorAnalysis::schedule_without_resource_constraints(TraceGraphList_i
           // should we do something with start. It may be that there will be a
           // unit we could use before hand, but we will instead use an earlier available unit.
 
-          std::vector<unsigned> &resourceVector = search->second.second;
+          std::vector<unsigned> &resourceVector = search->second;
           // find the minimum index
           for(unsigned idx = 0; idx < resourceVector.size(); idx++) {
             if(resourceVector[idx] < resourceReady) {
@@ -3954,7 +3942,7 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
 
           assert((graph[v].get_start(SINGLE_THREAD_TID) == 0) || (graph[v].get_start(SINGLE_THREAD_TID) == -1)); 
 
-          std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
+          //std::cerr << "ScheduleBB: " << graph[v].basicblock->getName().str() << "\n";
 
           // if we changed how we handle the vector and made it an array, we could do much better. 
 
@@ -3969,15 +3957,15 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
             start = std::max(start, (int64_t) graph[s].get_end(SINGLE_THREAD_TID));
           }
           start += 1;
-          std::cerr << "deps ready: " << start << "\n";    
+          //std::cerr << "deps ready: " << start << "\n";    
 
           BasicBlock *BB = graph[v].basicblock;
   
           start = std::max(cpuCycle, start);
 
-          std::cerr << "start: " << start << "\n";  
+          //std::cerr << "start: " << start << "\n";  
 
-          std::cerr << "resourceReady: " << cpuCycle << "\n";  
+          //std::cerr << "resourceReady: " << cpuCycle << "\n";  
 
           int64_t end = start;
           int64_t block_free = start;
@@ -3985,7 +3973,7 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
           end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
           cpuCycle = end;
 
-          std::cerr << "end: " << end << "\n";  
+          //std::cerr << "end: " << end << "\n";  
 
           graph[v].set_start(start, SINGLE_THREAD_TID);
           graph[v].set_end(end, SINGLE_THREAD_TID);
@@ -4043,11 +4031,7 @@ void AdvisorAnalysis::set_all_thread_pool_basic_block_instance_counts(BasicBlock
 void AdvisorAnalysis::adjust_all_thread_pool_resource_tables(BasicBlock *BB, int value) {
   for (auto it = threadPoolResourceTables.begin(); it != threadPoolResourceTables.end(); it++) {
     // if we went cpu only, set the first member to true
-    if(value <= 0) {
-      (*it).second->at(BB).first = true;
-    } else { 
-      (*it).second->at(BB).second.resize(value);
-    }
+      (*it).second->at(BB).resize(value);
   }
 }
 
@@ -4238,24 +4222,24 @@ static int AdvisorAnalysis::get_basic_block_instance_count(BasicBlock *BB) {
 // CPU: represented by a flag
 // other??
 // FIXME: integrate the cpu
-void AdvisorAnalysis::initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::pair<bool, std::vector<unsigned> > > *resourceTable, bool cpuOnly) {
+void AdvisorAnalysis::initialize_resource_table(Function *F, std::unordered_map<BasicBlock *, std::vector<unsigned> > *resourceTable, bool cpuOnly) {
 	for (auto BB = F->begin(); BB != F->end(); BB++) {
 		int repFactor = get_basic_block_instance_count(BB);
 		if (repFactor < 0) {
 			continue;
 		}
 
-		if ((repFactor == 0) || cpuOnly) {
+		if (cpuOnly) {
 			// cpu 
 			std::vector<unsigned> resourceVector(0);
-			resourceTable->insert(std::make_pair(BB, std::make_pair(true, resourceVector)));
+			resourceTable->insert(std::make_pair(BB, resourceVector));
 			DEBUG(*outputLog << "Created entry in resource table for basic block: " << BB->getName()
                               << " using cpu resources.\n");
 		} else {
 			// fpga
 			// create a vector
 			std::vector<unsigned> resourceVector(repFactor, 0);
-			resourceTable->insert(std::make_pair(BB, std::make_pair(false, resourceVector)));
+			resourceTable->insert(std::make_pair(BB, resourceVector));
 
 			DEBUG(*outputLog << "Created entry in resource table for basic block: " << BB->getName()
                               << " with " << repFactor << " entries.\n");
@@ -4615,14 +4599,15 @@ void ConstrainedScheduleVisitor::discover_vertex(TraceGraph_vertex_descriptor v,
   //	assert(0);
   //  })
   
-  bool cpu = (search->second).first;
   int64_t resourceReady = UINT_MAX;
   unsigned minIdx;
 
   // should we do something with start. It may be that there will be a
   // unit we could use before hand, but we will instead use an earlier available unit.
 
-  std::vector<unsigned> &resourceVector = search->second.second;
+  std::vector<unsigned> &resourceVector = search->second;
+  bool cpu = (resourceVector.size() == 0);
+  
   if (cpu) { // cpu resource flag
     resourceReady = *cpuCycle_ref;
   } else {
