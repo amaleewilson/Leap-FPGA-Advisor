@@ -1878,6 +1878,8 @@ bool AdvisorAnalysis::find_maximal_configuration_for_all_calls(Function *F, unsi
       }
     }
 
+    std::cerr << "Scheduling without constraint " << F->getName().str() << std::endl;  
+
     lastCycle += schedule_without_resource_constraints(fIt, F, &resourceTable);
 
     DEBUG(*outputLog << "Last Cycle: " << lastCycle << "\n");
@@ -3003,14 +3005,14 @@ void AdvisorAnalysis::find_optimal_configuration_for_all_calls(Function *F, unsi
 	unsigned finalArea = get_area_requirement(F);
 
         std::cerr << "Function: " << F->getName().str() << "\n";     
+        std::cerr << "Implementation: \n";     
+        dumpImplementationCounts(F);
         std::cerr << "CPU-only latency: " << cpuOnlyLatency << "\n";    
 	std::cerr << "Accelerator Only Latency: " << fpgaOnlyLatency << "\n";
 	std::cerr << "Accelerator Only Area: " << fpgaOnlyArea << "\n";
 	std::cerr << "Final Latency: " << finalLatency << "\n";
 	std::cerr << "Final Area: " << finalArea << "\n";
-              
-        //exit(0);
-
+       
 }
 
 uint64_t rdtsc(){
@@ -3125,7 +3127,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           auto search = resourceTable.find(BB);
           std::vector<unsigned> &resourceVector = search->second;                
           int count = resourceVector.size();
-          // std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
+          //std::cerr << "For job " << BB->getName().str() << "count is " << count << std::endl;               
           if(((count > 1) || ParallelizeOneZero) && (UseThreads > 1)) {
             // farm out a parallel job.    
             //std::cerr << "Issuing parallel job for " << BB->getName().str() << std::endl;               
@@ -3280,6 +3282,7 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           // Multiply coefs to obtain block counts. Need to adjust alpha up to deal with need to floor. 
           double area_removed_floor = 0;
           double area_removed = 0;
+          double minimum_delta_to_threshold = FLT_MAX;
 
           // We get some estimate of alpha.  Since we are doing
           // rounding and also cannot reduce block counts beneath 0,
@@ -3291,7 +3294,9 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
           double alpha_step = 1.0;
           double alpha_scaler = 2 * alpha_step;
           double alpha_step_cutoff = 1.0/(max_power * 128); // go a few extra steps.
-          double last_passing_step = 0;
+          double last_passing_step = -1; // If we don't every find a
+                                         // passing step, we should
+                                         // take the last value of the scaler. 
 
           double alpha_prime = alpha * alpha_scaler;
 
@@ -3328,7 +3333,11 @@ bool AdvisorAnalysis::incremental_gradient_descent(Function *F, std::unordered_m
             alpha_prime = alpha * alpha_scaler;
            
           } while (alpha_step > alpha_step_cutoff);
-
+                         
+          // Just in case we didn't find any steps that pass, assign some default.
+          if (last_passing_step < 0) {
+            last_passing_step = alpha_prime;
+          }
 
           // use last passing step to set the removal vector.            
           
@@ -3968,7 +3977,7 @@ uint64_t AdvisorAnalysis::schedule_cpu(TraceGraphList_iterator graph_it, Functio
           //std::cerr << "resourceReady: " << cpuCycle << "\n";  
 
           int64_t end = start;
-          int64_t block_free = start;
+
           // Assign endpoint based on cpu or accelerator.
           end += FunctionScheduler::get_basic_block_latency_cpu(*LT, BB);
           cpuCycle = end;
@@ -4376,6 +4385,15 @@ bool AdvisorAnalysis::prune_basic_block_configuration_to_device_area(Function *F
   }
 
   return true;
+}
+
+void AdvisorAnalysis::dumpImplementationCounts(Function *F) {
+  for (auto BB = F->begin(); BB != F->end(); BB++) {
+    int repFactor = get_basic_block_instance_count(BB);
+    if ( repFactor > 0 ) {
+      std::cerr << "Implementation for block : " << BB->getName().str() << " (area: " << FunctionAreaEstimator::get_basic_block_area(*AT, BB) << ") count is " << repFactor << std::endl;      
+    }
+  }
 }
 
 void AdvisorAnalysis::dumpBlockCounts(Function *F, unsigned cpuLatency = 0) {
